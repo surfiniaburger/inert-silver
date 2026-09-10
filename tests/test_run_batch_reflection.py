@@ -80,6 +80,9 @@ def test_build_payload_without_reflector():
     assert payload["config"]["taxonomy_bucket"] == "memory_safety"
     assert payload["config"]["active_mutation_id"] == "baseline_v0"
     assert payload["config"]["reflector_prompt"] == get_static_baseline_prompt("memory_safety")
+    assert payload["config"]["reflector"] is True
+    assert payload["config"]["reflector_in_process"] is True
+    assert payload["config"]["reflector_url"] == "http://127.0.0.1:8004"
 
 
 def test_build_payload_with_active_pareto_prompt(temp_gepa_dir):

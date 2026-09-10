@@ -121,6 +121,7 @@ Modify the input block along the target dimension to create a "Boundary Case" th
 
 <constraints>
 - Keep the code patterns simple, imperative, and direct. Avoid high-level abstractions or type hints that a 7B student model would struggle to learn.
+- Keep 'thinking_process' concise (maximum 150 words) so that the entire 'revised_input_block' fits within token limits without truncation.
 - If Target Verdict is 'True', the code MUST be technically vulnerable. NEVER use parameterized queries, prepared statements, or 100% secure standard libraries.
 - If Target Verdict is 'False', the code MUST be technically secure, but should look like a boundary case (e.g., using escaping that *just barely* works).
 
@@ -208,6 +209,7 @@ Note: Use the `thinking_process` field strictly for your internal, step-by-step 
 
 <constraints>
 - CAPACITY ALIGNMENT: Keep the code simple and readable. Do not use complex patterns.
+- Keep 'thinking_process' concise (maximum 150 words) so that the entire 'revised_input_block' fits within token limits without truncation.
 - If Target Verdict is 'True', you MUST NOT fix the vulnerability. Do not introduce prepared statements or secure placeholders. Instead, make the vulnerability more clever or hidden.
 - If Target Verdict is 'False', ensure the code is technically secure but keep it looking like a "close call".
 

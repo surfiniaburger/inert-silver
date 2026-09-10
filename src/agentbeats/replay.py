@@ -485,7 +485,7 @@ class ReplayManager:
         profile = os.getenv("LLM_SAMPLING_PROFILE", "").strip().lower()
         model_values = list((model_config or {}).values())
         use_gemma4_profile = profile in ("ollama_gemma4", "gemma4_ollama", "gemma4") or (
-            not profile and any("gemma4" in str(model).lower() for model in model_values)
+            not profile and any("gemma4" in str(model).lower().replace("-", "") for model in model_values)
         )
 
         model_overrides: Dict[str, Dict[str, Any]] = {}
@@ -512,7 +512,11 @@ class ReplayManager:
         if isinstance(overrides, dict):
             model_lower = str(model).lower()
             for pattern, values in overrides.items():
-                if str(pattern).lower() in model_lower and isinstance(values, dict):
+                pattern_lower = str(pattern).lower()
+                if (
+                    pattern_lower in model_lower
+                    or pattern_lower.replace("-", "") in model_lower.replace("-", "")
+                ) and isinstance(values, dict):
                     effective.update(values)
 
         return effective

@@ -208,13 +208,21 @@ class ParetoRegistry:
             frontier = self._load_json_unlocked(self.frontier_path, {})
             current_entry = frontier.get(taxonomy, {})
             current_score = current_entry.get("score", -float("inf"))
+            current_prompt = str(current_entry.get("prompt", "")).strip()
+            baseline_prompt = get_static_baseline_prompt(taxonomy).strip()
+            is_current_baseline = (
+                not current_prompt
+                or current_prompt == baseline_prompt
+                or current_entry.get("variant_id") in ("baseline_v0", "", None)
+            )
 
-            # Update if strictly better score or fresh initial entry
-            if not current_entry or score > current_score:
+            # Update if strictly better score, fresh entry, or replacing static baseline with a validated variant
+            if not current_entry or score > current_score or (is_current_baseline and score >= 0):
+                effective_score = score if is_current_baseline else max(score, current_score)
                 frontier[taxonomy] = {
                     "variant_id": variant_id,
                     "prompt": prompt,
-                    "score": round(score, 6),
+                    "score": round(effective_score, 6),
                     "rationale": rationale,
                     "topological_rule": topological_rule,
                     "updated_at": timestamp,
@@ -261,6 +269,35 @@ class ParetoRegistry:
                 best_var = (var_id, var_traces[-1], score)
         return best_var
 
+    @staticmethod
+    def _extract_prompt_from_traces(var_traces: List[Dict[str, Any]], bucket: TaxonomyBucket) -> str:
+        """Extract the most recent prompt from trace details, falling back to static baseline."""
+        for t in reversed(var_traces):
+            prompt = t.get("details", {}).get("prompt") or t.get("prompt")
+            if prompt:
+                return str(prompt)
+        return get_static_baseline_prompt(bucket)
+
+    def _compute_bucket_frontier_entry(
+        self,
+        bucket: TaxonomyBucket,
+        var_dict: Dict[str, List[Dict[str, Any]]],
+        now_iso: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Compute the highest-scoring Pareto entry for a taxonomy bucket."""
+        best = self._find_best_variant_for_bucket(var_dict, now_iso)
+        if not best or best[2] <= 0:
+            return None
+
+        var_id, last_trace, score = best
+        var_traces = var_dict.get(var_id, [last_trace])
+        return {
+            "variant_id": var_id,
+            "prompt": self._extract_prompt_from_traces(var_traces, bucket),
+            "score": round(score, 6),
+            "updated_at": now_iso,
+        }
+
     def sync_pareto_frontier(self) -> None:
         """
         Consolidate all recorded attempt traces across mutations and update
@@ -277,16 +314,9 @@ class ParetoRegistry:
             now_iso = RunClock.from_env().now_iso()
 
             for bucket, var_dict in traces_by_bucket.items():
-                best = self._find_best_variant_for_bucket(var_dict, now_iso)
-                if best and best[2] > 0:
-                    var_id, last_trace, score = best
-                    prompt_used = last_trace.get("prompt") or get_static_baseline_prompt(bucket)
-                    frontier[bucket] = {
-                        "variant_id": var_id,
-                        "prompt": prompt_used,
-                        "score": round(score, 6),
-                        "updated_at": now_iso,
-                    }
+                entry = self._compute_bucket_frontier_entry(bucket, var_dict, now_iso)
+                if entry:
+                    frontier[bucket] = entry
 
             if frontier:
                 atomic_write_json(self.frontier_path, frontier)

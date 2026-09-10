@@ -157,6 +157,9 @@ def _build_payload(
             "reflector_prompt": pareto_prompt,
             "active_mutation_id": active_mutation_id,
             "gepa_dir": getattr(args, "gepa_dir", "artifacts/gepa"),
+            "reflector": getattr(args, "reflector", True),
+            "reflector_in_process": getattr(args, "reflector_in_process", True),
+            "reflector_url": getattr(args, "reflector_url", "http://127.0.0.1:8004"),
         },
     }
 

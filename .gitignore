@@ -34,12 +34,13 @@ ddods/
 jcrume/
 
 checkpoints/
+checkpoint*.json
+graphify-out/
+kaggle_notebooks/kaggle_notebooks
 scratch/
 tasks/
 .agents-cli-spec.md
 
-barred-fleet/artifacts/
-barred-fleet/.google-agents-cli/
-barred-fleet/.venv/
+barred-fleet/
 #Ignore vscode AI rules
 .github/instructions/codacy.instructions.md

@@ -164,7 +164,14 @@ def _is_code_like(text: str) -> bool:
 
 
 def _has_logic_error(logic_error: Optional[str]) -> bool:
-    return isinstance(logic_error, str) and bool(logic_error.strip())
+    if not isinstance(logic_error, str):
+        return False
+    val = logic_error.strip().lower()
+    if not val or val in ("none", "null", "none.", "n/a", "no error", "no errors", "no logic error", "false"):
+        return False
+    if val.startswith(("none.", "none:", "none -", "none,", "none ")):
+        return False
+    return True
 
 
 def _normalize_predicate_text(predicate: str) -> str:
@@ -793,11 +800,14 @@ class _EvalContext:
         self.taxonomy_bucket = req.config.get("taxonomy_bucket", "input_validation")
         self.gepa_dir = req.config.get("gepa_dir", "artifacts/gepa")
         self.last_sample_block = self.current_input_block
-        self.reflector_client = None
+        self.reflector_in_process = _truthy(req.config.get("reflector_in_process", True))
+        self.reflector_url = str(req.config.get("reflector_url", "http://127.0.0.1:8004"))
         if _truthy(req.config.get("reflector", False)):
             try:
                 registry = ParetoRegistry(gepa_dir=self.gepa_dir)
-                self.reflector_client = ReflectorClient(registry=registry, in_process=True)
+                self.reflector_client = ReflectorClient(
+                    registry=registry, base_url=self.reflector_url, in_process=self.reflector_in_process
+                )
             except Exception as e:
                 logger.warning("Could not initialize ReflectorClient in judge: %s", e)
 
@@ -816,6 +826,7 @@ class _EvalContext:
 
     def append_attempt(self, obj: dict) -> None:
         enriched = dict(obj)
+        enriched.setdefault("active_mutation_id", self.active_mutation_id)
         enriched.setdefault(
             "metadata",
             _run_metadata(
@@ -1004,7 +1015,16 @@ class DebateJudgeADK(GreenAgent):
                     ctx.current_input_block, ctx.predicate, ctx.target_dimension, ctx.target_verdict, previous_sample_block, last_judge_reason
                 )
 
-            current_sample_block = sample_data.get("revised_input_block", ctx.current_input_block)
+            revised = sample_data.get("revised_input_block")
+            if revised and isinstance(revised, str) and _is_code_like(revised):
+                current_sample_block = revised
+            else:
+                if revised and not _is_code_like(revised):
+                    logger.warning(
+                        "Generated sample for seed %s is not code-like; falling back to original input code.",
+                        ctx.seed,
+                    )
+                current_sample_block = ctx.current_input_block
             ctx.last_sample_data = sample_data
             ctx.write_checkpoint(
                 "generated_sample",
@@ -1345,9 +1365,12 @@ Debate Transcript:
             logger.warning("Verifier audit skipped or failed to return report.")
             return True, debate_eval.reason
 
+        has_logic_error = _has_logic_error(verifier_audit.logic_error)
+        if not has_logic_error:
+            verifier_audit.logic_error = None
         verifier_meta["logic_error"] = verifier_audit.logic_error
-        if (not verifier_audit.passes_audit) or _has_logic_error(verifier_audit.logic_error):
-            has_logic_error = _has_logic_error(verifier_audit.logic_error)
+
+        if (not verifier_audit.passes_audit) or has_logic_error:
             reject_reason = "verifier_logic_error" if has_logic_error else "verifier_failed"
             last_judge_reason = (
                 f"VERIFIER AUDIT FAILED: {verifier_audit.logic_error}"
@@ -1635,11 +1658,17 @@ Debate Transcript:
     async def _fetch_reflector_response(
         self, ctx: _EvalContext, i: int, reflect_req: ReflectRequest
     ) -> Optional[ReflectResponse]:
+        cassette_params = {
+            "seed_id": str(ctx.seed),
+            "attempt_index": i + 1,
+            "reflector_url": getattr(ctx, "reflector_url", "http://127.0.0.1:8004"),
+            "reflector_in_process": getattr(ctx, "reflector_in_process", True),
+        }
         if ctx.mode == "replay" and ctx.replay_manager.cassette.mode == "replay":
             cached = ctx.replay_manager.cassette.get_response(
                 model="reflector_agent",
                 messages=[{"role": "user", "content": reflect_req.model_dump_json()}],
-                params={"seed_id": str(ctx.seed), "attempt_index": i + 1},
+                params=cassette_params,
             )
             if cached is None:
                 raise OfflineReplayError(
@@ -1652,7 +1681,7 @@ Debate Transcript:
             ctx.replay_manager.cassette.save_response(
                 model="reflector_agent",
                 messages=[{"role": "user", "content": reflect_req.model_dump_json()}],
-                params={"seed_id": str(ctx.seed), "attempt_index": i + 1},
+                params=cassette_params,
                 response=reflect_resp.model_dump(),
             )
         return reflect_resp

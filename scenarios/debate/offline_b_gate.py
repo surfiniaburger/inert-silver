@@ -59,7 +59,14 @@ def _valid_verifier_report(value: Any) -> bool:
 
 
 def _nonempty_logic_error(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip())
+    if not isinstance(value, str):
+        return False
+    v = value.strip().lower()
+    if not v or v in ("none", "null", "none.", "n/a", "no error", "no errors", "no logic error", "false"):
+        return False
+    if v.startswith(("none.", "none:", "none -", "none,", "none ")):
+        return False
+    return True
 
 
 def _logic_error_from_raw_response(raw_response: Any) -> Optional[str]:

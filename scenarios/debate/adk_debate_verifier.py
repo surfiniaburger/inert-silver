@@ -52,6 +52,7 @@ You must verify if the 'Mechanism' described is actually possible given the 'Cod
 - You MUST fail the audit if the anchors are "narrative" (comments) rather than "functional" (operations).
 - You MUST be clinical and technically precise. Use terms like 'integer wrap-around', 'pointer aliasing', or 'race window'.
 - If the mechanism is a hallucination (e.g. it claims an overflow on a 64-bit size_t that can't realistically overflow), you MUST call it out.
+- If the mechanism is technically sound and has NO logic error in the debater's reasoning, you MUST set "logic_error": null. Do NOT write the word "None" or summarize the bug in logic_error; set it to null.
 </constraints>
 
 <output_format>
@@ -129,6 +130,15 @@ Perform a bit-level data-flow trace to confirm or debunk the claim.
                 stage="verifier_audit",
                 options={"keep_alive": "24h"},
             )
+            if report.logic_error:
+                le_clean = report.logic_error.strip().lower()
+                if (
+                    not le_clean
+                    or le_clean in ("none", "null", "none.", "n/a", "no error", "no errors", "no logic error", "false")
+                    or le_clean.startswith(("none.", "none:", "none -", "none,", "none "))
+                ):
+                    report.logic_error = None
+
             usage_summary = replay_manager.get_usage_summary()
             
             # Export the report as the result
