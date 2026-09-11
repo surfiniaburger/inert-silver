@@ -9,7 +9,12 @@ from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
+import sys
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import numpy as np
 from sklearn.metrics import average_precision_score, confusion_matrix, roc_auc_score
