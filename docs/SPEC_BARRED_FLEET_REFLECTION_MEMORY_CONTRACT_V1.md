@@ -31,7 +31,7 @@ The goal is not to add autonomous prompt evolution immediately. The goal is to c
 Local tests:
 
 ```bash
-cd /Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/barred-fleet
+cd barred-fleet
 uv run pytest tests/unit/test_run_lifecycle.py tests/unit/test_agent_gateway.py tests/unit/test_model_armor.py -q
 uv run pytest tests/unit -q
 ```
@@ -39,7 +39,7 @@ uv run pytest tests/unit -q
 Cloud baseline checks:
 
 ```bash
-cd /Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/barred-fleet
+cd barred-fleet
 make verify-demo
 make verify-fresh-demo
 ```
@@ -47,7 +47,7 @@ make verify-fresh-demo
 Deferred bounded live check:
 
 ```bash
-cat /Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/docs/BARRED_FLEET_CLOUD_GATEWAY_LIVE_CHECKS.md
+cat docs/BARRED_FLEET_CLOUD_GATEWAY_LIVE_CHECKS.md
 ```
 
 ## Project Structure

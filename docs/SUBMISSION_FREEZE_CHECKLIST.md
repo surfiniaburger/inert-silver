@@ -148,7 +148,7 @@ Do not use an architecture diagram that implies:
 Run from:
 
 ```bash
-cd /Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/barred-fleet
+cd barred-fleet
 ```
 
 Required:

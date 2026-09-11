@@ -45,7 +45,7 @@ as invalid review output.
 
 ### 1. Schema Modifications
 
-We update the `confidence` field definition and add validators in [finding_schema.py](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/scripts/finding_schema.py):
+We update the `confidence` field definition and add validators in [finding_schema.py](file://scripts/finding_schema.py):
 
 ```python
 # scripts/finding_schema.py
@@ -155,7 +155,7 @@ Expose finding confidence statistics in the Unified Quality Report so that maint
 
 ### 1. Aggregating Confidence Distributions
 
-Modify [unified_compare.py](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/scripts/unified_compare.py) to parse and count confidence categories across all findings:
+Modify [unified_compare.py](file://scripts/unified_compare.py) to parse and count confidence categories across all findings:
 
 ```python
 # scripts/unified_compare.py

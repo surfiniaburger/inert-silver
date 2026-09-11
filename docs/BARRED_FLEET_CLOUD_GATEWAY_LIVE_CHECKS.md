@@ -19,7 +19,7 @@ This runbook is intentionally opt-in because the live run may call paid Gemini r
 - Baseline closed checks pass:
 
 ```bash
-cd /Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/barred-fleet
+cd barred-fleet
 make verify-demo
 make verify-fresh-demo
 ```
@@ -27,7 +27,7 @@ make verify-fresh-demo
 ## Step 1: Configure Cloud Gateway Mode With Live Still Off
 
 ```bash
-cd /Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/barred-fleet
+cd barred-fleet
 
 SERVICE_URL="https://barred-fleet-837262597425.us-east1.run.app"
 

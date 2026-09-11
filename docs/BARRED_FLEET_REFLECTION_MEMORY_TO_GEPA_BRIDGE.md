@@ -153,7 +153,7 @@ Rules:
 ### 1. Local Reflection Memory Unit Test
 
 ```bash
-cd /Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/barred-fleet
+cd barred-fleet
 uv run pytest tests/unit/test_reflection_memory.py -q
 ```
 
@@ -192,7 +192,7 @@ Warnings from ADK/A2A experimental APIs are expected and not failures.
 ### 4. Manual Compile Smoke From A Tiny Report
 
 ```bash
-cd /Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/barred-fleet
+cd barred-fleet
 uv run python - <<'PY'
 from app.reflection_memory import compile_reflection_memory
 
@@ -256,7 +256,7 @@ False False False
 Only after a product run exists and `/runs/{run_id}/report` is available:
 
 ```bash
-cd /Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/barred-fleet
+cd barred-fleet
 SERVICE_URL="https://barred-fleet-837262597425.us-east1.run.app"
 RUN_ID="product-live-check-REPLACE_ME"
 token="$(gcloud auth print-identity-token)"

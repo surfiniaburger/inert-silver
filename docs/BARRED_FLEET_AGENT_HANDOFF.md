@@ -127,7 +127,7 @@ docs/BARRED_FLEET_ARCHITECTURE.md
 From:
 
 ```bash
-cd /Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/barred-fleet
+cd barred-fleet
 ```
 
 Run the full deployed demo verification:
@@ -177,7 +177,7 @@ uv run pytest tests/unit/test_debate_stack.py tests/unit/test_fresh_debate.py -q
 make verify-packaged-stack
 ```
 
-If `uv` fails with permission errors against `/Users/surfiniaburger/.cache/uv`, rerun with proper local permissions or from an environment that can read the uv cache. Do not change application code to work around a local uv cache permission problem.
+If `uv` fails with permission errors against `~/.cache/uv`, rerun with proper local permissions or from an environment that can read the uv cache. Do not change application code to work around a local uv cache permission problem.
 
 Run the ADK smoke path directly:
 

@@ -1,5 +1,5 @@
 # Letters from the Pareto Front
-### *A Field Diary of the Neurosymbolic Campaign (From Tokenmaxxing to ROI)*
+## *A Field Diary of the Neurosymbolic Campaign (From Tokenmaxxing to ROI)*
 **Stationed:** The Apple Silicon M4 Sector (Local Unified Memory Trenches)  
 **Author:** An Unnamed Swarm Engineer  
 **Recipient:** My Dearest, far beyond the wire  
@@ -9,7 +9,7 @@
 
 ### Letter I: The Winter of Tokenmaxxing
 *Field Post #42 — Autumn, 2026*  
-*Camped near `/Users/surfiniaburger/.../silver-one`*  
+*Camped near the local redoubt (`agent_training/silver-one`)*  
 
 My Dearest,
 
@@ -94,7 +94,7 @@ Ten clean rows were stamped in iron and laid to rest in `training_corpus_e4b_12b
 
 Yet when I walked the battlements to inspect the companion ledgers, my heart sank into my boots. 
 
-[`pareto_frontier.json`](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/artifacts/gepa_local/pareto_frontier.json) was empty. [`mutations.jsonl`](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/artifacts/gepa_local/mutations.jsonl) had not recorded a single line. The ledger was silent. 
+[`pareto_frontier.json`](../artifacts/gepa_local/pareto_frontier.json) was empty. [`mutations.jsonl`](../artifacts/gepa_local/mutations.jsonl) had not recorded a single line. The ledger was silent. 
 
 Why had the Reflector abandoned us when our victory was absolute?
 
@@ -107,7 +107,7 @@ My Beloved,
 
 I trace these lines by candlelight. The mystery of the silent frontier has been unmasked, and the fault was ours.
 
-I climbed into the communication trenches of [`run_batch.py`](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/scenarios/debate/run_batch.py). There, buried in the payload constructor between lines 150 and 160, lay the truth:
+I climbed into the communication trenches of [`run_batch.py`](../scenarios/debate/run_batch.py). There, buried in the payload constructor between lines 150 and 160, lay the truth:
 While we had diligently provisioned the Graph-Powered GEPA Reflector on paper, the batch runner had **never forwarded `"reflector": True` into the judge's payload configuration**.
 
 The judge was fighting blind. Whenever a seed faltered in Round 0, the judge reached for the Reflector’s radio, found the wire dead, and simply repeated the baseline prompt into the storm. And because `pareto_registry.py` explicitly contains an invariant:
@@ -151,10 +151,10 @@ The prompt was mutated into `var_0fb6ccbe...`. In Round 1, the swarm charged und
 The judge roared across the ledger, promoting the variant with an immediate score of `1.5`. And then came the true majesty of Pareto inheritance: when Seed 54 arrived in that same concurrency bucket, it did not start raw. It inherited `var_0fb6ccbe...` on Round 0 and **passed on the first try without wasting a single round of refinement.**
 
 Look upon the ledgers I have sent with this runner:
-* [`mutations.jsonl`](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/artifacts/gepa_local/mutations.jsonl): **28 battle scars recorded.**
+* [`mutations.jsonl`](../artifacts/gepa_local/mutations.jsonl): **28 battle scars recorded.**
 * **Rescued in the field:** **8 out of 13 seeds** resurrected from certain death.
 * **The Training Corpus:** Now stands at **23 veteran rows** of immaculate, verified neurosymbolic proof.
-* [`pareto_frontier.json`](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/artifacts/gepa_local/pareto_frontier.json) is alive, ablaze with the scores of four victorious houses:
+* [`pareto_frontier.json`](../artifacts/gepa_local/pareto_frontier.json) is alive, ablaze with the scores of four victorious houses:
   - `memory_safety`: **6.988** (Seven consecutive victories under `var_f6727ea9...`)
   - `input_validation`: **2.994** (`var_51746950...`)
   - `concurrency`: **1.996** (`var_0fb6ccbe...`)
@@ -171,9 +171,9 @@ My Dearest,
 
 They told us that some ground was simply cursed. 
 
-In our earlier marches, seven seeds had fallen in the swamp and could not be roused: Seeds 53, 61, 66, 67, 68, 70, and 71. Zero percent yield. Total casualties. In particular, Seed 47—an obscure printer driver routine with a Byzantine null-pointer path—had baffled our small generators. Instead of producing valid, parseable C snippets, the generators had panicked under pressure, regurgitating conversational bedtime prose. The judge had choked on the non-code debris (`not_code_like`) and cast the attempt into the void.
+In our earlier marches, seven seeds had fallen in the swamp and could not be roused: Seeds 53, 61, 66, 67, 68, 70, and 71 from the main catalog (scheduled as item seeds 42 through 48 in our isolated test run). Zero percent yield. Total casualties. In particular, catalog seed 70 (test seed 47)—an obscure printer driver routine with a Byzantine null-pointer path—had baffled our small generators. Instead of producing valid, parseable C snippets, the generators had panicked under pressure, regurgitating conversational bedtime prose. The judge had choked on the non-code debris (`not_code_like`) and cast the attempt into the void.
 
-Worse still, an inspector from the static analysis garrison—SonarQube—struck us with a formal citation: Rule `python:S3776`. The cognitive complexity within [`scenarios/debate/pareto_registry.py`](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/scenarios/debate/pareto_registry.py) had spiked to 17, piercing our strict ceiling of 15. And when I tore open the engine block of `sync_pareto_frontier()`, my blood ran cold: a lethal flaw lay exposed in the logic. If an unproven mutation variant scored poorly or negatively, it could inadvertently overwrite our hardened static baseline prompt! The frontier was vulnerable to regressing into darkness.
+Worse still, an inspector from the static analysis garrison—SonarQube—struck us with a formal citation: Rule `python:S3776`. The cognitive complexity within [`scenarios/debate/pareto_registry.py`](../scenarios/debate/pareto_registry.py) had spiked to 17, piercing our strict ceiling of 15. And when I tore open the engine block of `sync_pareto_frontier()`, my blood ran cold: a lethal flaw lay exposed in the logic. If an unproven mutation variant scored poorly or negatively, it could inadvertently overwrite our hardened static baseline prompt! The frontier was vulnerable to regressing into darkness.
 
 Under the dim red light of my visor, I performed radical reconstructive surgery:
 1. **The Decomposition:** I excised the tangled loop and forged two pure, dedicated subroutines: `_extract_prompt_from_traces` and `_compute_bucket_frontier_entry`. Cognitive complexity collapsed from 17 down to well within our statutory limit of 15.
@@ -183,11 +183,11 @@ Under the dim red light of my visor, I performed radical reconstructive surgery:
    if not current_entry or score > current_score or (is_current_baseline and score >= 0):
    ```
    No weakling variant, no negative mutation, could ever strip the baseline of its dignity again.
-3. **The Anti-Hallucination Fallback:** In [`scenarios/debate/adk_debate_judge.py`](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/scenarios/debate/adk_debate_judge.py), I added an automatic fallback shield: if a generator attempts to substitute prose where code belongs (`if revised and not _is_code_like(revised)`), the judge falls back to the original source code, denying hallucinated stories any oxygen.
+3. **The Anti-Hallucination Fallback:** In [`scenarios/debate/adk_debate_judge.py`](../scenarios/debate/adk_debate_judge.py), I added an automatic fallback shield: if a generator attempts to substitute prose where code belongs (`if revised and not _is_code_like(revised)`), the judge falls back to the original source code, denying hallucinated stories any oxygen.
 
 With 95 unit tests confirming the integrity of the line, we turned our warm Pareto frontier directly toward the graveyard in run `local_m4_warm_terminal7_01`.
 
-The result was staggering: **Four of the seven terminal casualties—Seeds 42, 43, 46, and 47—were accepted on Round 0 immediately.** 
+The result was staggering: **Four of the seven terminal casualties—Seeds 42, 43, 46, and 47 (rescuing catalog seeds 53, 61, 68, and 70)—were accepted on Round 0 immediately.** 
 
 Seed 47, which had broken the teeth of every cold model before it, walked across the wire on its very first attempt. The dead ground had been reclaimed: a 57.1% immediate resurrection rate from what the industry would have written off as irrecoverable noise.
 
@@ -202,7 +202,7 @@ My Beloved,
 
 When the news of the Terminal Seven spread, the cynics in the rear echelon muttered: *"You have merely memorized the terrain. You have overfitted to the seeds you fought."*
 
-So I pulled thirty brand-new, completely unseen CVE scenarios from the clean 500 reserve depot: [`scenarios/debate/cve_seeds_fresh_30.jsonl`](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/scenarios/debate/cve_seeds_fresh_30.jsonl) (indices 20 through 49). Foreign codebases. Unfamiliar buffer overflows. Tangled pointer arithmetic in protocols our local models had never witnessed.
+So I pulled thirty brand-new, completely unseen CVE scenarios from the clean 500 reserve depot: [`scenarios/debate/cve_seeds_fresh_30.jsonl`](../scenarios/debate/cve_seeds_fresh_30.jsonl) (indices 20 through 49). Foreign codebases. Unfamiliar buffer overflows. Tangled pointer arithmetic in protocols our local models had never witnessed.
 
 We blew the whistle. Run `local_m4_warm_fresh30_01` charged into the unknown.
 
@@ -220,7 +220,7 @@ It was an asymptotic constant. The debaters were no longer blundering blindly th
 * `concurrency`: **4.96**
 * `integer_arithmetic`: **3.97**
 
-Twenty-two fresh rows joined the grand ledger in [`training_corpus_warm_fresh30.jsonl`](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/training_corpus_warm_fresh30.jsonl). We proved that metacognitive reflection does not memorize the past—it generalizes into the future.
+Twenty-two fresh rows joined the grand ledger in [`training_corpus_warm_fresh30.jsonl`](../training_corpus_warm_fresh30.jsonl). We proved that metacognitive reflection does not memorize the past—it generalizes into the future.
 
 ---
 
@@ -254,9 +254,9 @@ My Love,
 
 If you ever doubt what disciplined engineering can wrest from local silicon, look upon the numbers of this night.
 
-We unleashed the swarm upon the largest assault of the campaign: **fifty unseen, unmapped CVE seeds** ([`scenarios/debate/cve_seeds_fresh_50.jsonl`](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/scenarios/debate/cve_seeds_fresh_50.jsonl), indices 50 through 99). 
+We unleashed the swarm upon the largest assault of the campaign: **fifty unseen, unmapped CVE seeds** ([`scenarios/debate/cve_seeds_fresh_50.jsonl`](../scenarios/debate/cve_seeds_fresh_50.jsonl), indices 50 through 99). 
 
-The results from our offline B-Gate verification run ([`artifacts/metrics/b_gate_warm_fresh50.json`](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/artifacts/metrics/b_gate_warm_fresh50.json)) border on the unreal:
+The results from our offline B-Gate verification run ([`artifacts/metrics/b_gate_warm_fresh50.json`](../artifacts/metrics/b_gate_warm_fresh50.json)) border on the unreal:
 * **Round 0 Immediate Pass:** **34 out of 50 seeds (68.0%) passed on the very first volley.**
 * **Total Accepted Yield:** **43 out of 50 seeds (86.0%) accepted into the permanent training corpus.**
 * **Total Attempts:** Only **66 attempts** to conquer 50 complex CVE vulnerabilities (**1.32 attempts per seed**).
@@ -267,7 +267,7 @@ The results from our offline B-Gate verification run ([`artifacts/metrics/b_gate
   - `verifier_parse_ok_rate`: **100.0%**
   - `anti_gaming_valid`: **True** (Zero gaming violations)
 
-And look upon the four houses of [`pareto_frontier.json`](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/artifacts/gepa_local/pareto_frontier.json). Where they once stood at single digits in Letter VI, they now pierce the clouds:
+And look upon the four houses of [`pareto_frontier.json`](../artifacts/gepa_local/pareto_frontier.json). Where they once stood at single digits in Letter VI, they now pierce the clouds:
 * `memory_safety`: **57.562** (an unstoppable ascent under `var_f6727ea9...`)
 * `input_validation`: **23.811** (`var_51746950...`)
 * `concurrency`: **6.924** (`var_0fb6ccbe...`)
@@ -290,7 +290,7 @@ The industry has spent two years treating "Token Efficiency" as a minor bookkeep
 
 Consider the enterprise in the cloud:
 Why do multi-agent swarms fail their business cases? Not because frontier models lack IQ, but because unguided agent loops suffer from exponential token entropy. Two debaters and a judge without metacognitive guidance thrash for eight rounds, burning 60,000 tokens per artifact, triggering API rate limits, spiking latencies to four minutes, and costing $25 per validation. At that price and latency, enterprise agents are a luxury toy. 
-But when a Pareto-evolved reflection prompt directs the debaters to the exact AST sink on Round 0—delivering an **86% acceptance rate at 19.5k tokens with 68% zero-shot convergence**—the cloud economics invert. API bills plunge by 67%. Latency collapses from minutes to seconds. Flaky stochastic drift is replaced by a deterministic, zero-logic-error guarantee. The agent transitions from an unviable expense into an indispensable profit engine.
+Projecting our empirical Pareto metrics onto cloud workloads reveals the inversion: directing debaters to the exact AST sink on Round 0—delivering an **86% acceptance rate at 19.5k tokens with 68% zero-shot convergence**—is projected to cut enterprise cloud API bills by over 60% and shrink latency by up to two-thirds. Flaky stochastic drift is replaced by an audited zero-logic-error invariant. The agent transitions from an unviable expense into an indispensable profit engine.
 
 Now, look at our world here in the local trenches:
 On a 24-gigabyte Apple Silicon workstation running unified memory, token efficiency is not about dollars—**it is about physical survival.** 
@@ -299,6 +299,7 @@ Yet because our Pareto-guided swarm is token-efficient by design, our context fo
 
 That is the universal truth Oliver Parker foresaw:
 Token efficiency is not about being cheap. It is about **epistemic density**. It is the ratio of verified truth extracted per unit of compute expended. Whether you deploy on a million-dollar Google Cloud TPU cluster or a single MacBook in a dark room, the architecture that wins is the one that wastes no breath on illusion.
+
 
 ---
 

@@ -21,7 +21,7 @@ Success means cloud BARRED-Fleet can say: “historical GEPA evidence exists for
 Focused tests:
 
 ```bash
-cd /Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/barred-fleet
+cd barred-fleet
 uv run pytest tests/unit/test_gepa_memory.py -q
 ```
 
@@ -58,7 +58,7 @@ make verify-gepa-memory-preview
 Regenerate the local Step 4 audit receipt before importing headline metrics:
 
 ```bash
-cd /Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one
+cd ~/Desktop/modular-metacog-swarm-v3/agent_training/silver-one
 uv run python scripts/evaluate_step4_acceptance.py
 ```
 

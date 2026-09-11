@@ -36,7 +36,7 @@ flowchart TD
 
 ## 1. Prefix Prompt Caching Alignment
 
-Per [`docs/AI_REVIEWER_ROUTING_AND_CACHE.md`](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/docs/AI_REVIEWER_ROUTING_AND_CACHE.md), prompt caching in Transformer inference depends on **exact token prefix matching**. 
+Per [`docs/AI_REVIEWER_ROUTING_AND_CACHE.md`](file://docs/AI_REVIEWER_ROUTING_AND_CACHE.md), prompt caching in Transformer inference depends on **exact token prefix matching**. 
 
 ### Implementation:
 1. **Deterministic Prefix Layout ("Stable Top, Dynamic Bottom")**:

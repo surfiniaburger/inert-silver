@@ -202,7 +202,7 @@ Keep fixtures small dictionaries. Do not load GCS, Firestore, or live artifacts.
 Run targeted tests:
 
 ```bash
-cd /Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/barred-fleet
+cd barred-fleet
 uv run pytest tests/unit/test_reflection_memory.py -q
 ```
 
