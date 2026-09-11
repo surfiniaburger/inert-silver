@@ -214,9 +214,56 @@ Detection  ──►  Diagnosis  ──►  Patch Synthesis  ──►  Impact G
 
 ---
 
+## 8. Exposure Management vs. Vulnerability Management: Grounding Epistemic Impact in Transitive Attack Surfaces and Runtime Telemetry
+
+### 8.1 The Flaw-Count Fallacy vs. Contextual Risk
+Traditional software security relies on Vulnerability Management: cataloging CVE counts and sorting remediation backlogs solely by raw CVSS v3.1 base severity scores ($0.0 - 10.0$). In production systems, this creates severe alert fatigue and misallocated engineering effort:
+1. **Context Blindness:** A critical CVSS 9.8 vulnerability in an isolated test harness or unreachable dead-code branch is treated as an urgent blocker, while a medium CVSS 6.5 flaw in an internet-facing API gateway with access to backend databases is neglected.
+2. **Exploitation Reality:** Real-world telemetry (such as the CISA Known Exploited Vulnerabilities catalog) confirms that attackers concentrate almost exclusively on the tiny subset of vulnerabilities that have an accessible, exploitable execution path.
+3. **The DARPA AIxCC Accelerated Timeline:** As demonstrated by DARPA’s Artificial Intelligence Cyber Challenge ([DARPA AIxCC](https://www.darpa.mil/news/2024/ai-cyber-challenge-cybersecurity)), autonomous Cyber Reasoning Systems now discover and patch vulnerabilities in complex real-world software (such as Jenkins, Linux kernel, Nginx, SQLite3, and Apache Tika) in approximately 45 minutes. As automated tooling shrinks the window between vulnerability discovery and exploit emergence, static, manual triage queues collapse under load.
+
+### 8.2 AST Code Reachability ($R_{\text{reach}}$) as a Tri-State Epistemic Filter
+Finding a vulnerable function in a dependency or codebase does not imply exposure. The neurosymbolic engine evaluates reachability deterministically using Tree-Sitter AST dataflow extraction:
+- **Untrusted Sources ($S$):** Network reads (`recv`, `recvfrom`), file streams (`fread`, `fgets`), environment variables (`getenv`), or deserializers (`cJSON_Parse`).
+- **Security-Sensitive Sinks ($K$):** Memory operations (`memcpy`, `strcpy`, `snprintf`) and system executions (`system`, `popen`, `open`).
+
+Crucially, reachability is modeled as a **tri-state epistemic predicate**, strictly enforcing *"Unknown $\neq$ Safe"*:
+$$R_{\text{reach}}(v) \in \{\text{PROVEN\_REACHABLE}, \text{UNKNOWN\_REACHABLE}, \text{PROVEN\_UNREACHABLE}\}$$
+
+- If an untrusted source demonstrably connects to a sink without valid guards, $R_{\text{reach}} = \text{PROVEN\_REACHABLE}$ (High Exposure).
+- If AST parsing encounters incomplete translation units, unresolved pointer aliases, or unmapped macro expansions, reachability cannot be proven false. The engine assigns $R_{\text{reach}} = \text{UNKNOWN\_REACHABLE}$ and **fails closed**, routing the finding to Curiosity Buckets rather than suppressing remediation.
+- Operational exposure is reduced to zero **only** when non-reachability is deterministically proven or when path-complete guards are verified:
+$$\text{Operational Exposure}(v) = \begin{cases} 
+0 & \text{if } R_{\text{reach}}(v) = \text{PROVEN\_UNREACHABLE} \land \text{GuardVerified}(v) \\
+\text{CVSS}_{\text{base}}(v) \times \mathbb{I}(\text{Asset Exposed}) \times \omega(R_{\text{reach}}) & \text{otherwise (Fail-Closed, where } \omega \ge 0.8\text{ for UNKNOWN)}
+\end{cases}$$
+
+### 8.3 The Multi-Tiered Transitive Attack Surface
+Modern runtime binaries are composites of deep dependency trees:
+$$\text{Application Logic} \longrightarrow \text{Direct Dependency} \longrightarrow \text{Transitive Dependency} \longrightarrow \text{OS Packages} \longrightarrow \text{Container / Cloud Runtime}$$
+While Software Bills of Materials (SBOMs; e.g. CycloneDX via Syft) catalog package existence, they fail to prove execution reachability. The Epistemic Change-Impact Graph extends AST reachability across package boundaries into **Transitive Call-Graph Closure**:
+- **Bucket A (Structural Uncertainty):** Traces external exported symbols into downstream caller call-graphs.
+- **Bucket B (Semantic Contract Uncertainty):** Detects whether upstream package upgrades introduce breaking API contract mutations or silent data truncations.
+
+### 8.4 Candidate Compensating Controls as Invariant Guards
+When upstream patches are unavailable, delayed, or introduce breaking API changes, the Epistemic Graph synthesizes **Candidate Compensating Invariant Guards**:
+- For `MEMORY_WRITE` sinks: Enclosing `RANGE_VALIDATION` and `BOUNDS_CHECK` AST sanitizers.
+- For `POINTER_DEREF` sinks: Enclosing `NULL_CHECK` AST guards.
+- For `SYSTEM_CALL` sinks: Strict `COMMAND_SANITIZATION` and `ALLOWLIST_CHECK` filters.
+
+*Safety Rigor Note:* Syntactic AST presence alone does not guarantee semantic path coverage or runtime boundary enforcement. These constructs are treated as *candidate* compensating controls that lower triage priority only after path-complete symbolic verification or active runtime validation confirms non-bypassability.
+
+### 8.5 Bridging Compile-Time Epistemic AST to Runtime Telemetry (`AgentFence` & OpenTelemetry)
+To provide defense-in-depth, compile-time AST epistemic models interface directly with runtime observability and policy layers:
+1. **Compile-Time Reachability (Silver-One Core):** Identifies proven invariants, uncertain boundaries, and un-sanitized sink flows across code diffs (`diffAnalysis`, `silverOneDataflow`).
+2. **Runtime Telemetry & Policy Gateway (AgentFence OTel Provider):** Injects structured OpenTelemetry spans and metric events around uncertain AST boundaries (Bucket A/B) to observe argument ranges, track execution frequency, and log anomalous boundary crossings in production traffic. Where active policy enforcement is enabled, AgentFence acts as a policy decision point with deterministic fail-closed deny semantics; if telemetry fails or is unavailable, it logs diagnostic warnings without silently suppressing security boundaries.
+
+---
+
 ### Referenced System Artifacts
 - [`docs/THE_NEUROSYMBOLIC_SWARM_LESSONS_AND_POSTMORTEM.md`](THE_NEUROSYMBOLIC_SWARM_LESSONS_AND_POSTMORTEM.md): 5-Phase post-mortem and empirical receipts.
 - [`docs/EVALUATION_DISCIPLINE_GUIDE.md`](EVALUATION_DISCIPLINE_GUIDE.md): The 4 Anti-Gaming Invariants and statistical testing protocol.
 - [`scenarios/debate/graphify_flow_extractor.py`](../scenarios/debate/graphify_flow_extractor.py): Tree-sitter AST dataflow reachability extractor.
 - [`scenarios/debate/offline_b_gate.py`](../scenarios/debate/offline_b_gate.py): Deterministic B-gate invariant validation engine.
 - [`scenarios/debate/reflector_agent.py`](../scenarios/debate/reflector_agent.py): Graph-Powered GEPA Pareto reflector.
+
