@@ -1518,7 +1518,9 @@ Debate Transcript:
             last_judge_reason=payload.last_judge_reason,
         )
 
-        if ctx.reflector_client and ctx.reflector_client.registry and ctx.active_mutation_id != "baseline_v0":
+        reflector = getattr(ctx, "reflector_client", None)
+        active_mut = getattr(ctx, "active_mutation_id", "baseline_v0")
+        if reflector and reflector.registry and active_mut != "baseline_v0":
             try:
                 score = 1.0 + (0.5 if i > 0 else 0.0)
                 ctx.reflector_client.registry.register_pareto_prompt(
