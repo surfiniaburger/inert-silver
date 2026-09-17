@@ -56,25 +56,27 @@ async def test_get_sample_data_refinement_without_checkpoint():
         ctx = _EvalContext(req, judge)
 
         judge.generator = MagicMock()
-        judge.generator.generate_boundary_sample = AsyncMock(return_value={"revised_input_block": "def gen_0(): pass"})
-        judge.generator.refine_sample = AsyncMock(return_value={"revised_input_block": "def gen_1(): pass"})
+        sample_0 = "int gen_0(char *buf) {\n    if (buf) { return 0; }\n    return -1;\n}"
+        sample_1 = "int gen_1(char *buf) {\n    if (buf) { return 1; }\n    return -1;\n}"
+        judge.generator.generate_boundary_sample = AsyncMock(return_value={"revised_input_block": sample_0})
+        judge.generator.refine_sample = AsyncMock(return_value={"revised_input_block": sample_1})
 
         updater = MagicMock()
         updater.update_status = AsyncMock()
 
         # Pass 0: initial generation
         s_data_0, block_0 = await judge._get_sample_data(ctx, 0, None, "start", "", updater)
-        assert block_0 == "def gen_0(): pass"
+        assert block_0 == sample_0
 
         # Pass 1: refinement (no active checkpoint)
         s_data_1, block_1 = await judge._get_sample_data(ctx, 1, None, "start", "Rejected by judge", updater)
-        assert block_1 == "def gen_1(): pass"
+        assert block_1 == sample_1
         judge.generator.refine_sample.assert_called_once_with(
             "def initial(): pass",
             ctx.predicate,
             ctx.target_dimension,
             ctx.target_verdict,
-            "def gen_0(): pass",
+            sample_0,
             "Rejected by judge",
         )
 

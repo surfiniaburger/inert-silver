@@ -18,6 +18,8 @@ import pytest
 
 from scenarios.debate.graph_dataflow import FlowGraphSnapshot, FlowSignature
 from scenarios.debate.reflector_schemas import (
+    CuriosityBucket,
+    CuriosityDirective,
     GraphDiagnosticSignature,
     ReflectRequest,
     ReflectResponse,
@@ -559,3 +561,91 @@ class TestGetStaticBaselinePrompt:
         """Sanity check: input_validation prompt mentions injection vectors."""
         prompt = get_static_baseline_prompt("input_validation")
         assert "injection" in prompt.lower() or "traversal" in prompt.lower()
+
+
+class TestEpistemicSchemas:
+    """Tests for epistemic reflection schemas, curiosity directives, and metadata fields."""
+
+    def test_curiosity_directive_valid_construction(self) -> None:
+        directive = CuriosityDirective(
+            bucket="BUCKET_A_CALLER_STRUCTURAL",
+            target_symbol="read_packet",
+            reason="Uncalled static function",
+            directive_text="Investigate callers of read_packet.",
+        )
+        assert directive.bucket == "BUCKET_A_CALLER_STRUCTURAL"
+        assert directive.target_symbol == "read_packet"
+        assert directive.directive_text == "Investigate callers of read_packet."
+
+    def test_curiosity_directive_invalid_bucket_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            CuriosityDirective(
+                bucket="INVALID_BUCKET",  # type: ignore
+                target_symbol="foo",
+                reason="test",
+                directive_text="test directive",
+            )
+
+    def test_graph_diagnostic_signature_epistemic_fields(self) -> None:
+        directive = CuriosityDirective(
+            bucket="BUCKET_B_CONTRACT_SEMANTIC",
+            target_symbol="dest_buf",
+            reason="Unverified candidate guard",
+            directive_text="Verify candidate guard with path-complete proof.",
+        )
+        diag = GraphDiagnosticSignature(
+            scenario_id="sc_epistemic",
+            predicate_family="BUFFER_OVERFLOW",
+            failure_bucket="B_SINK_MISSING",
+            curiosity_bucket="BUCKET_B_CONTRACT_SEMANTIC",
+            curiosity_directive=directive,
+            epistemic_reachability="UNKNOWN_REACHABLE",
+            epistemic_guard_state="CANDIDATE_ONLY",
+            operational_exposure=7.5,
+        )
+        assert diag.curiosity_bucket == "BUCKET_B_CONTRACT_SEMANTIC"
+        assert diag.curiosity_directive == directive
+        assert diag.epistemic_reachability == "UNKNOWN_REACHABLE"
+        assert diag.epistemic_guard_state == "CANDIDATE_ONLY"
+        assert diag.operational_exposure == 7.5
+
+        flow_dict = diag.to_flow_dict()
+        assert flow_dict["curiosity_bucket"] == "BUCKET_B_CONTRACT_SEMANTIC"
+        assert flow_dict["epistemic_reachability"] == "UNKNOWN_REACHABLE"
+        assert flow_dict["operational_exposure"] == 7.5
+
+    def test_reflect_request_and_response_with_curiosity_directive(self) -> None:
+        directive = CuriosityDirective(
+            bucket="BUCKET_A_CALLER_STRUCTURAL",
+            target_symbol="handle_conn",
+            reason="Callers not found in AST",
+            directive_text="Investigate callers of handle_conn.",
+        )
+        diag = GraphDiagnosticSignature(
+            scenario_id="sc_req",
+            predicate_family="BUFFER_OVERFLOW",
+            failure_bucket="B_SINK_MISSING",
+        )
+        req = ReflectRequest(
+            attempt_index=1,
+            scenario_id="sc_req",
+            predicate_family="BUFFER_OVERFLOW",
+            taxonomy_bucket="memory_safety",
+            code_text="void foo() {}",
+            graph_diagnostic=diag,
+            current_system_prompt="prompt",
+            curiosity_directive=directive,
+        )
+        assert req.curiosity_directive == directive
+
+        resp = ReflectResponse(
+            status="SUCCESS",
+            mutated_system_prompt="mutated prompt",
+            mutation_rationale="test",
+            applied_topological_rule="rule",
+            taxonomy_bucket="memory_safety",
+            pareto_variant_id="v1",
+            estimated_correction_success_probability=0.8,
+            curiosity_directive=directive,
+        )
+        assert resp.curiosity_directive == directive

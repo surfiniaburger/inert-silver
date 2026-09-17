@@ -64,8 +64,13 @@ def _nonempty_logic_error(value: Any) -> bool:
     v = value.strip().lower()
     if not v or v in ("none", "null", "none.", "n/a", "no error", "no errors", "no logic error", "false"):
         return False
-    if v.startswith(("none.", "none:", "none -", "none,", "none ")):
+    stripped = v.rstrip(".:,- ")
+    if stripped in ("none", "null", "n/a"):
         return False
+    if v.startswith(("none:", "none -", "none,", "none.")):
+        remainder = v[5:].strip()
+        if not remainder or remainder in ("none", "null", "n/a", "no error", "no errors"):
+            return False
     return True
 
 
