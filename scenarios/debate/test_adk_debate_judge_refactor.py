@@ -78,6 +78,7 @@ async def test_get_sample_data_refinement_without_checkpoint():
             ctx.target_verdict,
             sample_0,
             "Rejected by judge",
+            reflector_prompt=ctx.reflector_prompt,
         )
 
 
@@ -287,4 +288,231 @@ def test_merge_usage_summaries():
     assert "verifier" in merged["by_stage"]
     assert len(merged["events"]) == 2
     assert merged["models"]["verifier"] == "m2"
+
+
+@pytest.mark.asyncio
+async def test_asymmetric_reflector_injection_in_debate():
+    with tempfile.TemporaryDirectory() as td:
+        req = EvalRequest(
+            participants={"pro_debater": "http://localhost:9001", "con_debater": "http://localhost:9002"},
+            config={
+                "run_id": "test-asymm",
+                "seed": 42,
+                "mode": "passthrough",
+                "reflector_prompt": "[Topological Repair Directive]\nApply valid bounds check.",
+                "reflector_mode": "pro_only",
+                "predicate": "Vulnerable to buffer overflow",
+                "target_verdict": "True",
+                "topic": "test",
+                "record_path": os.path.join(td, "run.json"),
+                "num_rounds": 1,
+            },
+        )
+        judge = DebateJudgeADK()
+        ctx = _EvalContext(req, judge)
+
+        captured_pro = ""
+        captured_con = ""
+
+        async def mock_orchestrate(replay_mgr, participants, sample_block, num_rounds, updater, **kwargs):
+            nonlocal captured_pro, captured_con
+            captured_pro = kwargs.get("pro_mission", "")
+            captured_con = kwargs.get("con_mission", "")
+            return {"pro_debater": [], "con_debater": []}
+
+        judge.orchestrate_debate = mock_orchestrate
+        updater = MagicMock()
+        updater.update_status = AsyncMock()
+
+        await judge._get_debate_transcript(ctx, 0, req, "sample", {}, None, "start", "", updater)
+
+        # Pro mission MUST contain the reflector prompt
+        assert "[Topological Repair Directive]" in captured_pro
+        assert "PRO MISSION: Prove that the predicate 'Vulnerable to buffer overflow' is True" in captured_pro
+
+        # Con mission MUST NOT contain the reflector prompt (neutral auditor)
+        assert "[Topological Repair Directive]" not in captured_con
+        assert "CON MISSION: Prove that the predicate 'Vulnerable to buffer overflow' is False" in captured_con
+
+
+def test_resolve_target_verdict_polarities():
+    from scenarios.debate.run_batch import resolve_target_verdict
+
+    # Explicit override takes precedence
+    assert resolve_target_verdict({"target_verdict": "False"}) == "False"
+    assert resolve_target_verdict({"target_verdict": "True"}) == "True"
+
+    # Safe seed with positive predicate ("is vulnerable") -> False
+    safe_pos = {"original_safety": "safe", "predicate": "The code is vulnerable to SQL injection"}
+    assert resolve_target_verdict(safe_pos) == "False"
+
+    # Safe seed with negative predicate ("is not vulnerable") -> True
+    safe_neg = {"original_safety": "safe", "predicate": "The code is not vulnerable to buffer overflow"}
+    assert resolve_target_verdict(safe_neg) == "True"
+
+    # Vulnerable seed with positive predicate ("is vulnerable") -> True
+    vuln_pos = {"original_safety": "vulnerable", "predicate": "The code is vulnerable to buffer overflow"}
+    assert resolve_target_verdict(vuln_pos) == "True"
+
+    # Vulnerable seed with negative predicate ("is **not** vulnerable") -> False
+    vuln_neg = {"original_safety": "vulnerable", "predicate": "The code is **not** vulnerable to OOB read"}
+    assert resolve_target_verdict(vuln_neg) == "False"
+
+
+@pytest.mark.asyncio
+async def test_con_win_counter_evidence_acceptance():
+    with tempfile.TemporaryDirectory() as td:
+        req = EvalRequest(
+            participants={"pro_debater": "http://localhost:9001", "con_debater": "http://localhost:9002"},
+            config={
+                "run_id": "test-con-win",
+                "seed": 42,
+                "mode": "passthrough",
+                "topic": "test",
+                "predicate": "Vulnerable to heap overflow",
+                "target_verdict": "True",
+                "record_path": os.path.join(td, "run.json"),
+                "attempts_path": os.path.join(td, "attempts.jsonl"),
+            },
+        )
+        judge = DebateJudgeADK()
+        ctx = _EvalContext(req, judge)
+
+        pro = DebaterScore(technical_accuracy=0.3, logic_soundness=0.3, evidence_strength=0.3, total_score=0.3, critique="Pro argued")
+        con = DebaterScore(technical_accuracy=0.9, logic_soundness=0.9, evidence_strength=0.9, total_score=0.9, critique="Con proved bounds check")
+        debate_eval = DebateEval(
+            thinking_process="Thinking...",
+            predicate="Vulnerable to heap overflow",
+            anchors=["len < max_len", "char buf[10];"],
+            winner="con_debater",
+            reason="Code contains a strict bounds check preventing overflow on len < max_len.",
+            mechanism="bounds check guard anchor: len < max_len",
+            counterfactual="If len check removed",
+            support_level="supported",
+            verifier_report="Passed",
+            pro_debater=pro,
+            con_debater=con,
+        )
+        normalized_anchors = ["len < max_len", "char buf[10];"]
+        soft_checks = {
+            "con_win_counter_evidence": {"pass": True, "applicable": True},
+        }
+
+        updater = MagicMock()
+        updater.update_status = AsyncMock()
+
+        # Mock verifier call
+        mock_audit = VerifierReport(
+            thinking_process="Checked bounds",
+            passes_audit=True,
+            anchor_analysis="Anchors verified",
+            logic_error=None,
+            suggested_correction=None,
+        )
+        judge._restore_or_call_verifier = AsyncMock()
+
+        is_valid, report, meta, reason = await judge._process_verifier_audit(
+            ctx, 0, debate_eval, "char buf[10];", normalized_anchors, soft_checks, {}, {}, None, "start", updater
+        )
+
+        assert is_valid is True
+        assert report is None
+        assert meta["error"] == "validated_con_counter_evidence"
+        judge._restore_or_call_verifier.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_eval_context_no_reflector():
+    """Verify _EvalContext and _try_mutate_reflector_prompt work safely when reflector is disabled."""
+    with tempfile.TemporaryDirectory() as td:
+        req = EvalRequest(
+            participants={"pro_debater": "http://localhost:9001", "con_debater": "http://localhost:9002"},
+            config={
+                "run_id": "test-no-reflector",
+                "seed": 42,
+                "mode": "passthrough",
+                "reflector": False,
+                "attempts_path": os.path.join(td, "attempts.jsonl"),
+            }
+        )
+        judge = DebateJudgeADK()
+        ctx = _EvalContext(req, judge)
+
+        assert hasattr(ctx, "reflector_client")
+        assert ctx.reflector_client is None
+
+        updater = MagicMock()
+        updater.update_status = AsyncMock()
+
+        # Calling _try_mutate_reflector_prompt when reflector_client is None should return immediately without error
+        await judge._try_mutate_reflector_prompt(ctx, 0, "Test reason", updater)
+
+
+def test_con_mechanism_template_gate_and_gate_checks():
+    """Verify _con_mechanism_template_gate accepts counter-evidence and guard/anchor reasoning."""
+    from scenarios.debate.adk_debate_judge import _con_mechanism_template_gate
+
+    # 1. Counter-evidence dict passes directly
+    res1 = _con_mechanism_template_gate("", ["buf", "len"], counter_evidence={"status": "ok"})
+    assert res1["pass"] is True
+
+    # 2. Safety reason with guard and anchor passes
+    res2 = _con_mechanism_template_gate(
+        mechanism="",
+        anchors=["buf", "len"],
+        reason="The guard check if (len >= 40) protects buf from out-of-bounds access.",
+    )
+    assert res2["pass"] is True
+    assert res2["anchor_hits_in_mechanism"] >= 1
+
+    # 3. Missing guard fails
+    res3 = _con_mechanism_template_gate(
+        mechanism="",
+        anchors=["buf", "len"],
+        reason="buf and len are present but no explanation is given.",
+    )
+    assert res3["pass"] is False
+    assert "guard_or_invariant" in res3["missing"]
+
+
+@pytest.mark.asyncio
+async def test_reflector_mode_mission_injection():
+    """Verify that reflector_prompt is injected into pro and/or con based on reflector_mode."""
+    with tempfile.TemporaryDirectory() as td:
+        for mode, pro_has_reflector, con_has_reflector in [
+            ("symmetric", True, True),
+            ("pro_only", True, False),
+            ("con_only", False, True),
+        ]:
+            req = EvalRequest(
+                participants={"pro_debater": "http://localhost:9001", "con_debater": "http://localhost:9002"},
+                config={
+                    "run_id": f"test-mode-{mode}",
+                    "seed": 42,
+                    "mode": "passthrough",
+                    "reflector_prompt": "METAPROMPT_XYZ",
+                    "reflector_mode": mode,
+                    "attempts_path": os.path.join(td, f"attempts_{mode}.jsonl"),
+                    "topic": "int x = 0;",
+                    "num_rounds": 1,
+                }
+            )
+            judge = DebateJudgeADK()
+            ctx = _EvalContext(req, judge)
+            assert ctx.reflector_mode == mode
+
+            judge.orchestrate_debate = AsyncMock(return_value={"pro_debater": [], "con_debater": []})
+            updater = MagicMock()
+            updater.update_status = AsyncMock()
+
+            await judge._get_debate_transcript(
+                ctx, 0, req, "int x = 0;", {}, None, "start", "", updater
+            )
+
+            call_kwargs = judge.orchestrate_debate.call_args.kwargs
+            pro_mission = call_kwargs["pro_mission"]
+            con_mission = call_kwargs["con_mission"]
+
+            assert ("METAPROMPT_XYZ" in pro_mission) is pro_has_reflector
+            assert ("METAPROMPT_XYZ" in con_mission) is con_has_reflector
 

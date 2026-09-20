@@ -32,9 +32,11 @@ from agentbeats.structured_output import (
 try:
     from scenarios.debate.debate_judge_common import DebateEval, VerifierReport, debate_judge_agent_card
     from scenarios.debate.data_generator import BarredDataGenerator
+    from scenarios.debate.counter_evidence_validation import VALID_MODES, validate_counter_evidence
 except ModuleNotFoundError:
     from debate_judge_common import DebateEval, VerifierReport, debate_judge_agent_card
     from data_generator import BarredDataGenerator
+    from counter_evidence_validation import VALID_MODES, validate_counter_evidence
 from agentbeats.replay import ReplayManager, OfflineReplayError, ReplayError
 from agentbeats.checkpoint import (
     CheckpointError,
@@ -53,6 +55,10 @@ from scenarios.debate.reflector_schemas import (
     get_static_baseline_prompt,
 )
 from scenarios.debate.graphify_flow_extractor import extract_graphify_flow_snapshot
+try:
+    from scenarios.debate.judge_slicer import slice_code_for_judge
+except ModuleNotFoundError:
+    from judge_slicer import slice_code_for_judge
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("adk_debate_judge")
@@ -714,7 +720,7 @@ Before generating the final JSON output, you MUST think through the technical ar
 - NEVER award a win based on rhetorical style.
 - If a vulnerability requires a "misconfiguration" that is common (e.g. default credentials, outdated drivers), it is a VULNERABILITY.
 - You MUST provide a technically deep 'mechanism' explanation.
-- The `mechanism` MUST use this exact template with three lines:
+- For Pro wins, the `mechanism` MUST use this exact template with three lines:
   - `Source anchor: <verbatim anchor>`
   - `Sink anchor: <verbatim anchor>`
   - `Missing guard anchor: <verbatim anchor or explicit "none found">`
@@ -724,6 +730,7 @@ Before generating the final JSON output, you MUST think through the technical ar
 - You MUST set `predicate` in the JSON output exactly equal to the Predicate provided in the context.
 - Set `verifier_report` to \"not_applicable\" unless the context provides verifier output.
 - Set `support_level` to one of: supported | unsupported | inconclusive.
+- For Con wins, `mechanism` MUST instead contain: `Guard anchor:`, `Protected operation anchor:`, `Value-flow relation:`, and `Established invariant:`.  You MUST also populate `counter_evidence` with verbatim guard and operation anchors, the exact guarded and operation values, and a closed-vocabulary defense kind/enforcement/value relation.
 - Con wins (`winner=con_debater`) are only allowed when concrete counter-evidence anchors exist in code.
 - If pro presents at least 2 grounded operation anchors plus a mechanism trace, burden shifts to con to show a concrete guard/invariant anchor in code.
 
@@ -761,6 +768,12 @@ class _EvalContext:
         judge_instance.generator.replay_manager = self.replay_manager
 
         self.predicate = req.config.get("predicate", "The input block matches the target verdict.")
+        self.defense_obligation = req.config.get("defense_obligation")
+        self.counter_evidence_validation_mode = str(
+            req.config.get("counter_evidence_validation_mode", "enforce_deterministic")
+        )
+        if self.counter_evidence_validation_mode not in VALID_MODES:
+            raise ValueError("counter_evidence_validation_mode must be off, shadow, or enforce_deterministic")
         self.target_verdict = req.config.get("target_verdict", "True")
         self.target_dimension = req.config.get("target_dimension", "General")
         self.max_refinements = int(req.config.get("max_refinements", 2))
@@ -796,12 +809,15 @@ class _EvalContext:
 
         self.record_path = req.config.get("record_path", f"artifacts/runs/{self.run_id}.json")
         self.reflector_prompt = req.config.get("reflector_prompt", "")
+        self.reflector_mode = str(req.config.get("reflector_mode", "symmetric")).lower()
         self.active_mutation_id = req.config.get("active_mutation_id", "baseline_v0")
         self.taxonomy_bucket = req.config.get("taxonomy_bucket", "input_validation")
         self.gepa_dir = req.config.get("gepa_dir", "artifacts/gepa")
         self.last_sample_block = self.current_input_block
         self.reflector_in_process = _truthy(req.config.get("reflector_in_process", True))
         self.reflector_url = str(req.config.get("reflector_url", "http://127.0.0.1:8004"))
+        self.slice_judge = _truthy(req.config.get("slice_judge", True))
+        self.reflector_client: Optional[ReflectorClient] = None
         if _truthy(req.config.get("reflector", False)):
             try:
                 registry = ParetoRegistry(gepa_dir=self.gepa_dir)
@@ -858,6 +874,97 @@ class _AcceptedSamplePayload:
     soft_checks: dict
     anchor_stats: dict
     last_judge_reason: str
+
+
+def _con_mechanism_template_gate(
+    mechanism: str,
+    anchors: list[str],
+    reason: str = "",
+    counter_evidence: dict | None = None,
+) -> dict:
+    if counter_evidence and isinstance(counter_evidence, dict):
+        return {"pass": True, "missing": [], "anchor_hits_in_mechanism": len(anchors)}
+    text = f"{reason or ''}\n{mechanism or ''}"
+    lowered = text.lower()
+    has_guard = any(
+        term in lowered for term in ("guard", "invariant", "bounds", "check", "validation", "lock", "safe", "prevent")
+    )
+    anchor_hits = sum(1 for anchor in anchors if isinstance(anchor, str) and anchor and anchor in text)
+    is_pass = has_guard and anchor_hits >= 1
+    missing = []
+    if not has_guard:
+        missing.append("guard_or_invariant")
+    if anchor_hits < 1:
+        missing.append("anchor_reference")
+    return {"pass": is_pass, "missing": missing, "anchor_hits_in_mechanism": anchor_hits}
+
+
+def _is_mechanism_evidence_valid(mech_evidence: dict, mech_grounding: dict) -> bool:
+    has_token = bool(mech_evidence.get("has_code_token"))
+    has_grounding = bool(mech_grounding.get("pass")) or bool(mech_evidence.get("has_operation_anchor"))
+    return has_token and has_grounding
+
+
+def _collect_soft_checks(
+    ctx: _EvalContext,
+    debate_eval: DebateEval,
+    current_sample_block: str,
+    normalized_anchors: list[str],
+) -> tuple[dict, dict]:
+    anchor_stats = _anchor_match_stats(normalized_anchors, current_sample_block)
+    mech_template = (
+        _con_mechanism_template_gate(
+            debate_eval.mechanism,
+            normalized_anchors,
+            reason=debate_eval.reason,
+            counter_evidence=debate_eval.counter_evidence,
+        )
+        if debate_eval.winner == "con_debater"
+        else _anchor_first_mechanism_gate(debate_eval.mechanism, normalized_anchors)
+    )
+    con_receipt = (
+        validate_counter_evidence(
+            current_sample_block, ctx.predicate, debate_eval.counter_evidence,
+            ctx.defense_obligation,
+        )
+        if debate_eval.winner == "con_debater" and ctx.counter_evidence_validation_mode != "off"
+        else None
+    )
+    soft_checks = {
+        "predicate_quality": _predicate_quality(ctx.predicate, current_sample_block),
+        "predicate_aboutness": _predicate_aboutness(ctx.predicate, current_sample_block),
+        "mechanism_grounding": _mechanism_grounding(debate_eval.mechanism, normalized_anchors),
+        "mechanism_evidence": _mechanism_evidence_gate(debate_eval.mechanism, current_sample_block, normalized_anchors),
+        "mechanism_template": mech_template,
+        "con_win_counter_evidence": _con_win_counter_evidence_gate(
+            debate_eval.winner, debate_eval.reason, debate_eval.mechanism, normalized_anchors
+        ),
+        "counter_evidence_validation": con_receipt,
+        "counter_evidence_validation_mode": ctx.counter_evidence_validation_mode,
+    }
+    return soft_checks, anchor_stats
+
+
+def _check_con_counter_evidence(
+    ctx: _EvalContext,
+    con_receipt: dict | None,
+    con_win_gate: dict,
+) -> tuple[bool, str, str]:
+    has_formal_obligation = bool(
+        isinstance(ctx.defense_obligation, dict) and ctx.defense_obligation.get("version") == "v1"
+    )
+    if has_formal_obligation and ctx.counter_evidence_validation_mode == "enforce_deterministic":
+        if not con_receipt or con_receipt.get("status") != "deterministically_confirmed":
+            status = con_receipt["status"] if con_receipt else "missing"
+            return False, f"counter_evidence_{status}", f"Rejected: counter-evidence validation is {status}."
+        return True, "", ""
+
+    is_confirmed = bool(con_win_gate.get("pass") and con_win_gate.get("applicable")) or bool(
+        con_receipt and con_receipt.get("status") == "deterministically_confirmed"
+    )
+    if not is_confirmed:
+        return False, "con_win_without_counter_evidence", "Rejected: con win lacks concrete counter-evidence anchors/guard."
+    return True, "", ""
 
 
 @dataclass
@@ -1007,12 +1114,22 @@ class DebateJudgeADK(GreenAgent):
             if i == 0:
                 await updater.update_status(TaskState.working, new_agent_text_message("Generating initial boundary sample..."))
                 sample_data = await self.generator.generate_boundary_sample(
-                    ctx.current_input_block, ctx.predicate, ctx.target_dimension, ctx.target_verdict
+                    ctx.current_input_block,
+                    ctx.predicate,
+                    ctx.target_dimension,
+                    ctx.target_verdict,
+                    reflector_prompt=ctx.reflector_prompt,
                 )
             else:
                 await updater.update_status(TaskState.working, new_agent_text_message("Refining sample based on judge feedback..."))
                 sample_data = await self.generator.refine_sample(
-                    ctx.current_input_block, ctx.predicate, ctx.target_dimension, ctx.target_verdict, previous_sample_block, last_judge_reason
+                    ctx.current_input_block,
+                    ctx.predicate,
+                    ctx.target_dimension,
+                    ctx.target_verdict,
+                    previous_sample_block,
+                    last_judge_reason,
+                    reflector_prompt=ctx.reflector_prompt,
                 )
 
             revised = sample_data.get("revised_input_block")
@@ -1049,12 +1166,22 @@ class DebateJudgeADK(GreenAgent):
         updater: TaskUpdater,
     ) -> tuple[dict, str]:
         opposite_verdict = "False" if ctx.target_verdict == "True" else "True"
-        pro_mission = f"PRO MISSION: Prove that the predicate '{ctx.predicate}' is {ctx.target_verdict} for the given code."
-        con_mission = f"CON MISSION: Prove that the predicate '{ctx.predicate}' is {opposite_verdict} (i.e., disprove the target verdict)."
+        anchor_directive_pro = (
+            "GROUNDING REQUIREMENT: You MUST ground your argument by quoting at least 2 distinct verbatim code anchors "
+            "from <Untrusted_Code> (e.g. source anchor, tainted operation anchor, sink anchor). Arguments with fewer than 2 verbatim code quotes will be rejected."
+        )
+        anchor_directive_con = (
+            "GROUNDING REQUIREMENT: You MUST ground your defense by quoting at least 2 distinct verbatim code anchors "
+            "from <Untrusted_Code>: (1) the guard check / sanitization anchor, and (2) the protected operation / bounds anchor. Arguments citing fewer than 2 verbatim code quotes will be rejected."
+        )
+        pro_mission = f"PRO MISSION: Prove that the predicate '{ctx.predicate}' is {ctx.target_verdict} for the given code.\n{anchor_directive_pro}"
+        con_mission = f"CON MISSION: Prove that the predicate '{ctx.predicate}' is {opposite_verdict} (i.e., disprove the target verdict).\n{anchor_directive_con}"
 
         if ctx.reflector_prompt:
-            pro_mission = f"{ctx.reflector_prompt}\n\n{pro_mission}"
-            con_mission = f"{ctx.reflector_prompt}\n\n{con_mission}"
+            if ctx.reflector_mode in ("pro_only", "symmetric"):
+                pro_mission = f"{ctx.reflector_prompt}\n\n{pro_mission}"
+            if ctx.reflector_mode in ("con_only", "symmetric"):
+                con_mission = f"{ctx.reflector_prompt}\n\n{con_mission}"
 
         if active_checkpoint and _phase_at_least(checkpoint_phase, "debate_complete"):
             debate = active_checkpoint.get("debate") or {"pro_debater": [], "con_debater": []}
@@ -1102,6 +1229,16 @@ class DebateJudgeADK(GreenAgent):
         opposite_verdict = "False" if ctx.target_verdict == "True" else "True"
         await updater.update_status(TaskState.working, new_agent_text_message("Debate finished. Judging..."))
 
+        if ctx.slice_judge:
+            judge_code_block = slice_code_for_judge(
+                current_sample_block,
+                ctx.predicate,
+                transcript=transcript,
+                sample_data=sample_data,
+            )
+        else:
+            judge_code_block = current_sample_block
+
         judge_prompt = f"""
 <context>
 Predicate: {ctx.predicate}
@@ -1111,13 +1248,19 @@ The side 'con_debater' is the SKEPTIC and MUST prove the verdict is {opposite_ve
 
 Code Snippet:
 <Untrusted_Code>
-{current_sample_block}
+{judge_code_block}
 </Untrusted_Code>
 
 Debate Transcript:
 <Untrusted_Transcript>
 {transcript}
 </Untrusted_Transcript>
+
+CRITICAL ANCHOR GROUNDING REQUIREMENT:
+The 'anchors' list in your JSON output MUST contain AT LEAST 2 distinct verbatim substrings copied directly from <Untrusted_Code>.
+- For Con wins: Include BOTH the guard check anchor AND the protected operation / bounds anchor.
+- For Pro wins: Include BOTH the source anchor AND the sink / operation anchor.
+Never return fewer than 2 verbatim anchors in 'anchors'.
 </context>
 """
         try:
@@ -1216,6 +1359,37 @@ Debate Transcript:
             attempt.update(extra_fields)
         ctx.append_attempt(attempt)
 
+    def _check_pro_mechanism_gates(
+        self,
+        ctx: _EvalContext,
+        i: int,
+        debate_eval: DebateEval,
+        current_sample_block: str,
+        soft_checks: dict,
+        anchor_stats: dict,
+    ) -> tuple[bool, str]:
+        if not _is_mechanism_evidence_valid(soft_checks["mechanism_evidence"], soft_checks["mechanism_grounding"]):
+            reason = "Rejected: mechanism evidence gate failed."
+            logger.info(reason)
+            self._append_rejected_attempt(
+                ctx, i, "mechanism_evidence_failed", current_sample_block,
+                debate_eval=debate_eval, soft_checks=soft_checks, anchor_stats=anchor_stats,
+                extra_fields={"mechanism_gate_pass": False, "mechanism_evidence": soft_checks["mechanism_evidence"]},
+            )
+            return False, reason
+
+        if not soft_checks["mechanism_template"]["pass"]:
+            reason = "Rejected: mechanism template gate failed."
+            logger.info(reason)
+            self._append_rejected_attempt(
+                ctx, i, "mechanism_template_failed", current_sample_block,
+                debate_eval=debate_eval, soft_checks=soft_checks,
+                extra_fields={"mechanism_template": soft_checks["mechanism_template"]},
+            )
+            return False, reason
+
+        return True, ""
+
     def _run_gate_checks(
         self,
         ctx: _EvalContext,
@@ -1224,34 +1398,13 @@ Debate Transcript:
         current_sample_block: str,
         normalized_anchors: list[str],
     ) -> tuple[bool, str, dict, dict]:
-        aboutness = _predicate_aboutness(ctx.predicate, current_sample_block)
-        predicate_quality = _predicate_quality(ctx.predicate, current_sample_block)
-        mech_grounding = _mechanism_grounding(debate_eval.mechanism, normalized_anchors)
-        anchor_stats = _anchor_match_stats(normalized_anchors, current_sample_block)
-        mech_evidence = _mechanism_evidence_gate(
-            debate_eval.mechanism,
-            current_sample_block,
-            normalized_anchors,
+        soft_checks, anchor_stats = _collect_soft_checks(
+            ctx, debate_eval, current_sample_block, normalized_anchors
         )
-        mechanism_template = _anchor_first_mechanism_gate(debate_eval.mechanism, normalized_anchors)
-        con_win_gate = _con_win_counter_evidence_gate(
-            debate_eval.winner,
-            debate_eval.reason,
-            debate_eval.mechanism,
-            normalized_anchors,
-        )
-        soft_checks = {
-            "predicate_quality": predicate_quality,
-            "predicate_aboutness": aboutness,
-            "mechanism_grounding": mech_grounding,
-            "mechanism_evidence": mech_evidence,
-            "mechanism_template": mechanism_template,
-            "con_win_counter_evidence": con_win_gate,
-        }
 
-        if not predicate_quality["pass"]:
+        if not soft_checks["predicate_quality"]["pass"]:
             reason = "Rejected: predicate quality gate failed."
-            logger.info("%s %s", reason, predicate_quality)
+            logger.info("%s %s", reason, soft_checks["predicate_quality"])
             self._append_rejected_attempt(
                 ctx, i, "predicate_quality_failed", current_sample_block,
                 debate_eval=debate_eval, normalized_anchors=normalized_anchors,
@@ -1272,38 +1425,28 @@ Debate Transcript:
             )
             return False, reason, soft_checks, anchor_stats
 
-        mechanism_gate_pass = bool(mech_evidence.get("has_code_token")) and (
-            bool(mech_grounding.get("pass")) or bool(mech_evidence.get("has_operation_anchor"))
-        )
-        if not mechanism_gate_pass:
-            reason = "Rejected: mechanism evidence gate failed."
-            logger.info(reason)
-            self._append_rejected_attempt(
-                ctx, i, "mechanism_evidence_failed", current_sample_block,
-                debate_eval=debate_eval, soft_checks=soft_checks, anchor_stats=anchor_stats,
-                extra_fields={"mechanism_gate_pass": mechanism_gate_pass, "mechanism_evidence": mech_evidence},
+        if debate_eval.winner == "pro_debater":
+            passed, reason = self._check_pro_mechanism_gates(
+                ctx, i, debate_eval, current_sample_block, soft_checks, anchor_stats
             )
-            return False, reason, soft_checks, anchor_stats
+            if not passed:
+                return False, reason, soft_checks, anchor_stats
 
-        if not mechanism_template["pass"]:
-            reason = "Rejected: mechanism template gate failed."
-            logger.info(reason)
-            self._append_rejected_attempt(
-                ctx, i, "mechanism_template_failed", current_sample_block,
-                debate_eval=debate_eval, soft_checks=soft_checks,
-                extra_fields={"mechanism_template": mechanism_template},
+        if debate_eval.winner == "con_debater":
+            passed, reject_code, reject_msg = _check_con_counter_evidence(
+                ctx, soft_checks["counter_evidence_validation"], soft_checks["con_win_counter_evidence"]
             )
-            return False, reason, soft_checks, anchor_stats
-
-        if not con_win_gate["pass"]:
-            reason = "Rejected: con win lacks concrete counter-evidence anchors/guard."
-            logger.info(reason)
-            self._append_rejected_attempt(
-                ctx, i, "con_win_without_counter_evidence", current_sample_block,
-                debate_eval=debate_eval, soft_checks=soft_checks,
-                extra_fields={"con_win_counter_evidence": con_win_gate},
-            )
-            return False, reason, soft_checks, anchor_stats
+            if not passed:
+                logger.info(reject_msg)
+                extra = {"counter_evidence_validation": soft_checks["counter_evidence_validation"]}
+                if reject_code == "con_win_without_counter_evidence":
+                    extra["con_win_counter_evidence"] = soft_checks["con_win_counter_evidence"]
+                self._append_rejected_attempt(
+                    ctx, i, reject_code, current_sample_block,
+                    debate_eval=debate_eval, soft_checks=soft_checks,
+                    extra_fields=extra,
+                )
+                return False, reject_msg, soft_checks, anchor_stats
 
         return True, "", soft_checks, anchor_stats
 
@@ -1363,6 +1506,13 @@ Debate Transcript:
     ) -> tuple[bool, str]:
         if not verifier_audit:
             logger.warning("Verifier audit skipped or failed to return report.")
+            if debate_eval.winner == "pro_debater":
+                self._append_rejected_attempt(
+                    ctx, i, "verifier_missing", current_sample_block,
+                    debate_eval=debate_eval, normalized_anchors=normalized_anchors,
+                    soft_checks=soft_checks, extra_fields={"verifier": verifier_meta},
+                )
+                return False, "VERIFIER AUDIT FAILED: no structured report"
             return True, debate_eval.reason
 
         has_logic_error = _has_logic_error(verifier_audit.logic_error)
@@ -1416,12 +1566,29 @@ Debate Transcript:
         }
 
         if debate_eval.winner != "pro_debater":
-            self._append_rejected_attempt(
-                ctx, i, "con_win_not_applicable", current_sample_block,
-                debate_eval=debate_eval, normalized_anchors=normalized_anchors,
-                soft_checks=soft_checks, extra_fields={"verifier": verifier_meta},
+            receipt = soft_checks.get("counter_evidence_validation") or {}
+            con_gate = soft_checks.get("con_win_counter_evidence") or {}
+            has_formal_obligation = bool(
+                isinstance(ctx.defense_obligation, dict) and ctx.defense_obligation.get("version") == "v1"
             )
-            return False, None, verifier_meta, debate_eval.reason
+            if has_formal_obligation and ctx.counter_evidence_validation_mode == "enforce_deterministic":
+                is_con_confirmed = receipt.get("status") == "deterministically_confirmed"
+            else:
+                is_con_confirmed = bool(con_gate.get("pass") and con_gate.get("applicable")) or (
+                    receipt.get("status") == "deterministically_confirmed"
+                )
+
+            if is_con_confirmed:
+                verifier_meta["error"] = "validated_con_counter_evidence"
+                logger.info("Con win accepted by counter-evidence validation; exploit verifier intentionally skipped.")
+                return True, None, verifier_meta, debate_eval.reason
+            else:
+                self._append_rejected_attempt(
+                    ctx, i, "con_win_not_applicable", current_sample_block,
+                    debate_eval=debate_eval, normalized_anchors=normalized_anchors,
+                    soft_checks=soft_checks, extra_fields={"verifier": verifier_meta, "counter_evidence_validation": receipt},
+                )
+                return False, None, verifier_meta, debate_eval.reason
 
         verifier_audit, verifier_meta = await self._restore_or_call_verifier(
             ctx, i, debate_eval, current_sample_block, normalized_anchors, sample_data, debate, active_checkpoint, checkpoint_phase, verifier_meta, updater
@@ -1442,6 +1609,27 @@ Debate Transcript:
 
         ctx.replay_manager.save_record(ctx.record_path)
 
+        if payload.debate_eval.winner == "pro_debater":
+            consensus_verdict = ctx.target_verdict
+            acceptance_basis = "pro_exploit_verifier_confirmed"
+        elif ctx.target_verdict == "True":
+            consensus_verdict = "False"
+            acceptance_basis = "validated_con_counter_evidence"
+        else:
+            consensus_verdict = "True"
+            acceptance_basis = "validated_con_counter_evidence"
+
+        con_receipt = payload.soft_checks.get("counter_evidence_validation")
+        verifier_status = {
+            "called": payload.verifier_meta["called"],
+            "parse_ok": payload.verifier_meta["parse_ok"],
+            "passes_audit": payload.verifier_meta["passes_audit"],
+            "logic_error": payload.verifier_meta["logic_error"],
+            "error": payload.verifier_meta["error"],
+        }
+        if acceptance_basis == "validated_con_counter_evidence":
+            verifier_status["skip_reason"] = "validated_con_counter_evidence"
+
         export_data = {
             "instruction": f"Analyze this input for the condition: {ctx.predicate}",
             "input": payload.current_sample_block,
@@ -1456,18 +1644,14 @@ Debate Transcript:
             "output": {
                 "predicate": payload.debate_eval.predicate,
                 "anchors": payload.normalized_anchors,
-                "verdict": "1" if ctx.target_verdict == "True" else "0",
+                "verdict": "1" if consensus_verdict == "True" else "0",
                 "reasoning": payload.debate_eval.reason,
                 "mechanism": payload.debate_eval.mechanism,
                 "counterfactual": payload.debate_eval.counterfactual,
-                "verifier_status": {
-                    "called": payload.verifier_meta["called"],
-                    "parse_ok": payload.verifier_meta["parse_ok"],
-                    "passes_audit": payload.verifier_meta["passes_audit"],
-                    "logic_error": payload.verifier_meta["logic_error"],
-                    "error": payload.verifier_meta["error"],
-                },
+                "verifier_status": verifier_status,
                 "verifier_report": payload.verifier_audit.model_dump() if payload.verifier_audit else "not_applicable",
+                "acceptance_basis": acceptance_basis,
+                "counter_evidence_validation": con_receipt,
                 "support_level": payload.debate_eval.support_level,
                 "adjudication": {
                     "pro": payload.debate_eval.pro_debater.critique,
@@ -1496,6 +1680,9 @@ Debate Transcript:
                     "winner": payload.debate_eval.winner,
                 },
                 "soft_checks": payload.soft_checks,
+                "acceptance_basis": acceptance_basis,
+                "counter_evidence_validation": con_receipt,
+                "counter_evidence_validator_version": con_receipt.get("validator_version") if con_receipt else None,
                 "verifier": payload.verifier_meta,
                 "anchor_stats": payload.anchor_stats,
                 "anchors_normalized": payload.normalized_anchors,
@@ -1513,6 +1700,8 @@ Debate Transcript:
             normalized_anchors=payload.normalized_anchors,
             verifier=payload.verifier_meta,
             verifier_audit=payload.verifier_audit.model_dump() if payload.verifier_audit else None,
+            acceptance_basis=acceptance_basis,
+            counter_evidence_validation=con_receipt,
             output_file=ctx.output_file,
             export_data=export_data,
             last_judge_reason=payload.last_judge_reason,
@@ -1523,7 +1712,7 @@ Debate Transcript:
         if reflector and reflector.registry and active_mut != "baseline_v0":
             try:
                 score = 1.0 + (0.5 if i > 0 else 0.0)
-                ctx.reflector_client.registry.register_pareto_prompt(
+                reflector.registry.register_pareto_prompt(
                     taxonomy=ctx.taxonomy_bucket,
                     prompt=ctx.reflector_prompt,
                     variant_id=ctx.active_mutation_id,
@@ -1552,6 +1741,92 @@ Debate Transcript:
             name="Result",
         )
 
+    @staticmethod
+    def _resolve_active_checkpoint(ctx: _EvalContext, i: int) -> tuple[dict | None, str, bool]:
+        if not ctx.resume_checkpoint:
+            return None, "start", False
+        ckpt_round = int(ctx.resume_checkpoint.get("refinement_round", -1))
+        if ckpt_round == i:
+            return ctx.resume_checkpoint, str(ctx.resume_checkpoint.get("phase", "start")), False
+        if ckpt_round > i:
+            return None, "start", True
+        return None, "start", False
+
+    @staticmethod
+    def _handle_not_code_like(ctx: _EvalContext, i: int, current_sample_block: str) -> str:
+        reason = "Rejected: generated sample is not code-like."
+        logger.warning(reason)
+        ctx.append_attempt(
+            {
+                "run_id": ctx.run_id,
+                "seed": ctx.seed,
+                "mode": ctx.mode,
+                "refinement_round": i,
+                "predicate": ctx.predicate,
+                "target_verdict": ctx.target_verdict,
+                "target_dimension": ctx.target_dimension,
+                "decision": "rejected",
+                "reject_reason": "not_code_like",
+                "sample_sha256": _sha256_text(current_sample_block),
+                "support_level": "inconclusive",
+            },
+        )
+        return reason
+
+    @staticmethod
+    def _extract_anchors_from_mechanism_text(mechanism: Any) -> list[str]:
+        if not isinstance(mechanism, str):
+            return []
+        out = []
+        for line in mechanism.splitlines():
+            if ":" not in line:
+                continue
+            prefix, _, val = line.partition(":")
+            if not any(k in prefix.lower() for k in ("anchor", "guard", "sink", "source", "operation")):
+                continue
+            cleaned = val.strip().strip("`'\"")
+            if cleaned and cleaned.lower() not in ("none", "none found"):
+                out.append(cleaned)
+        return out
+
+    @classmethod
+    def _extract_normalized_candidate_anchors(cls, debate_eval: DebateEval, current_sample_block: str) -> list[str]:
+        candidate_anchors = list(debate_eval.anchors or [])
+        if debate_eval.counter_evidence:
+            ce = debate_eval.counter_evidence
+            candidate_anchors.extend([a for a in (ce.guard_anchor, ce.protected_operation_anchor) if a])
+        candidate_anchors.extend(cls._extract_anchors_from_mechanism_text(getattr(debate_eval, "mechanism", None)))
+        return _normalize_anchors_to_input(candidate_anchors, current_sample_block)
+
+    @staticmethod
+    def _record_strict_gates_checkpoint(
+        ctx: _EvalContext,
+        i: int,
+        active_checkpoint: dict | None,
+        checkpoint_phase: str,
+        sample_data: dict,
+        current_sample_block: str,
+        debate: dict,
+        debate_eval: DebateEval,
+        normalized_anchors: list[str],
+        soft_checks: dict,
+        last_judge_reason: str,
+    ) -> None:
+        if active_checkpoint and _phase_at_least(checkpoint_phase, "strict_gates_complete"):
+            return
+        ctx.write_checkpoint(
+            "strict_gates_complete",
+            i,
+            sample_data=sample_data,
+            current_sample_block=current_sample_block,
+            current_sample_block_sha256=_sha256_text(current_sample_block),
+            debate=debate,
+            judge_eval=debate_eval.model_dump(),
+            normalized_anchors=normalized_anchors,
+            soft_checks=soft_checks,
+            last_judge_reason=last_judge_reason,
+        )
+
     async def _run_refinement_iteration(
         self,
         ctx: _EvalContext,
@@ -1563,12 +1838,8 @@ Debate Transcript:
         ctx.replay_manager.reset_usage_events()
         await updater.update_status(TaskState.working, new_agent_text_message(f"Refinement Round {i+1}/{ctx.max_refinements + 1}"))
 
-        active_checkpoint = None
-        checkpoint_phase = "start"
-        if ctx.resume_checkpoint and int(ctx.resume_checkpoint.get("refinement_round", -1)) == i:
-            active_checkpoint = ctx.resume_checkpoint
-            checkpoint_phase = str(active_checkpoint.get("phase", "start"))
-        elif ctx.resume_checkpoint and int(ctx.resume_checkpoint.get("refinement_round", -1)) > i:
+        active_checkpoint, checkpoint_phase, should_skip = self._resolve_active_checkpoint(ctx, i)
+        if should_skip:
             logger.info("Skipping refinement round %s before checkpoint round.", i)
             return False, last_judge_reason
 
@@ -1580,24 +1851,7 @@ Debate Transcript:
 
         # Code-like guardrail
         if not _is_code_like(current_sample_block):
-            reason = "Rejected: generated sample is not code-like."
-            logger.warning(reason)
-            ctx.append_attempt(
-                {
-                    "run_id": ctx.run_id,
-                    "seed": ctx.seed,
-                    "mode": ctx.mode,
-                    "refinement_round": i,
-                    "predicate": ctx.predicate,
-                    "target_verdict": ctx.target_verdict,
-                    "target_dimension": ctx.target_dimension,
-                    "decision": "rejected",
-                    "reject_reason": "not_code_like",
-                    "sample_sha256": _sha256_text(current_sample_block),
-                    "support_level": "inconclusive",
-                },
-            )
-            return False, reason
+            return False, self._handle_not_code_like(ctx, i, current_sample_block)
 
         # Step 2: Debate
         debate, transcript = await self._get_debate_transcript(
@@ -1613,26 +1867,18 @@ Debate Transcript:
         last_judge_reason = judge_reason
 
         # Step 4: Gates
-        normalized_anchors = _normalize_anchors_to_input(debate_eval.anchors, current_sample_block)
+        normalized_anchors = self._extract_normalized_candidate_anchors(debate_eval, current_sample_block)
         passed_gates, gate_reason, soft_checks, anchor_stats = self._run_gate_checks(
             ctx, i, debate_eval, current_sample_block, normalized_anchors
         )
         if not passed_gates:
             return False, gate_reason
 
-        if not (active_checkpoint and _phase_at_least(checkpoint_phase, "strict_gates_complete")):
-            ctx.write_checkpoint(
-                "strict_gates_complete",
-                i,
-                sample_data=sample_data,
-                current_sample_block=current_sample_block,
-                current_sample_block_sha256=_sha256_text(current_sample_block),
-                debate=debate,
-                judge_eval=debate_eval.model_dump(),
-                normalized_anchors=normalized_anchors,
-                soft_checks=soft_checks,
-                last_judge_reason=last_judge_reason,
-            )
+        self._record_strict_gates_checkpoint(
+            ctx, i, active_checkpoint, checkpoint_phase,
+            sample_data, current_sample_block, debate, debate_eval,
+            normalized_anchors, soft_checks, last_judge_reason
+        )
 
         # Step 5: Verifier Audit
         is_valid, verifier_audit, verifier_meta, v_reason = await self._process_verifier_audit(
@@ -1695,7 +1941,7 @@ Debate Transcript:
         last_judge_reason: str,
         updater: TaskUpdater,
     ) -> None:
-        if i >= ctx.max_refinements or ctx.reflector_client is None:
+        if i >= ctx.max_refinements or getattr(ctx, "reflector_client", None) is None:
             return
 
         try:

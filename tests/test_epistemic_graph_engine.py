@@ -307,8 +307,8 @@ def test_ast_extractor_public_entrypoint_reaches_proven_reachable():
 # ---------------------------------------------------------------------------
 
 
-def test_reflector_agent_injects_curiosity_directive():
-    registry = ParetoRegistry()
+def test_reflector_agent_injects_curiosity_directive(tmp_path):
+    registry = ParetoRegistry(tmp_path)
     directive = CuriosityDirective(
         bucket="BUCKET_A_CALLER_STRUCTURAL",
         target_symbol="handle_packet",

@@ -7,10 +7,15 @@ to extract sources, sinks, sanitizers, and FlowGraphSnapshots across partial C/C
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Set, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-import tree_sitter
-import tree_sitter_c
+try:  # Keep diagnostics importable in lightweight/reporting environments.
+    import tree_sitter
+    import tree_sitter_c
+except ModuleNotFoundError:  # pragma: no cover - depends on optional runtime extra
+    tree_sitter = None
+    tree_sitter_c = None
 
 from scenarios.debate.graph_dataflow import (
     FlowGraphSnapshot,
@@ -20,7 +25,7 @@ from scenarios.debate.graph_dataflow import (
 
 logger = logging.getLogger(__name__)
 
-C_LANGUAGE = tree_sitter.Language(tree_sitter_c.language())
+C_LANGUAGE = tree_sitter.Language(tree_sitter_c.language()) if tree_sitter and tree_sitter_c else None
 
 # Security-sensitive call sinks
 MEMORY_SINKS: Set[str] = {
@@ -542,6 +547,13 @@ def extract_graphify_flow_snapshot(
             parse_error="Empty code input",
         )
 
+    if tree_sitter is None or C_LANGUAGE is None:
+        return FlowGraphSnapshot(
+            snapshot_id=snapshot_id, scenario_id=scenario_id, version=version,
+            created_at=created_at, nodes={}, signatures=[], is_complete=False,
+            parse_error="Tree-sitter C support unavailable",
+        )
+
     candidates = wrap_in_function_if_needed(code_text)
     if not candidates:
         return FlowGraphSnapshot(
@@ -606,3 +618,223 @@ def extract_graphify_flow_snapshot(
         parse_error=None,
         has_unresolved_callers=has_unresolved,
     )
+
+
+@dataclass(frozen=True)
+class CounterEvidenceProof:
+    """A deliberately narrow, AST-backed local proof relation for a Con claim."""
+
+    status: str
+    relation: Optional[str]
+    guard_span: Optional[dict]
+    operation_span: Optional[dict]
+    guarded_value: Optional[str]
+    operation_value: Optional[str]
+    parser_mode: str
+    failure_reason: Optional[str] = None
+
+
+def _proof_span(node: Any) -> dict:
+    return {
+        "start_byte": node.start_byte,
+        "end_byte": node.end_byte,
+        "start_line": node.start_point[0] + 1,
+        "end_line": node.end_point[0] + 1,
+    }
+
+
+def _walk_named(node: Any):
+    yield node
+    for child in node.named_children:
+        yield from _walk_named(child)
+
+
+def _node_text(code_bytes: bytes, node: Any) -> str:
+    return code_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+
+def _parse_snippet(code_text: str) -> tuple[Optional[bytes], Optional[Any], Optional[CounterEvidenceProof]]:
+    if tree_sitter is None or C_LANGUAGE is None:
+        return None, None, CounterEvidenceProof("inconclusive", None, None, None, None, None,
+                                                "unavailable", "counter_evidence_parser_unavailable")
+    original = strip_markdown_fences(code_text).strip()
+    if not original:
+        return None, None, CounterEvidenceProof("invalid_contract", None, None, None, None, None,
+                                                "original", "counter_evidence_empty_code")
+    parser = tree_sitter.Parser(C_LANGUAGE)
+    code_bytes = original.encode("utf-8")
+    tree = parser.parse(code_bytes)
+    if tree.root_node.has_error:
+        return None, None, CounterEvidenceProof("inconclusive", None, None, None, None, None,
+                                                "original", "counter_evidence_unparseable")
+    return code_bytes, tree, None
+
+
+def _locate_guard_and_operation(
+    tree: Any, code_bytes: bytes, guard_anchor: str, operation_anchor: str
+) -> tuple[Optional[Any], Optional[Any], Optional[str]]:
+    guards = [n for n in _walk_named(tree.root_node) if n.type == "if_statement" and guard_anchor in _node_text(code_bytes, n)]
+    operations = [n for n in _walk_named(tree.root_node)
+                  if n.type in {"call_expression", "unary_expression", "subscript_expression", "binary_expression"}
+                  and operation_anchor in _node_text(code_bytes, n)]
+    if not guards:
+        return None, None, "counter_evidence_guard_not_functional"
+    if not operations:
+        return None, None, "counter_evidence_operation_not_functional"
+    return guards[0], operations[0], None
+
+
+def _is_common_value(guarded_val: str, op_val: str, condition_text: str, operation_text: str) -> bool:
+    return bool(
+        guarded_val and guarded_val == op_val and
+        guarded_val in condition_text and guarded_val in operation_text
+    )
+
+
+def _verify_safe_branch_proof(
+    kind: str,
+    enforcement: str,
+    relation: str,
+    condition_text: str,
+    guarded_value: str,
+    op_inside_safe_branch: bool,
+) -> Optional[str]:
+    if (kind not in {"range_guarded_operation", "null_check"}
+            or enforcement != "operation_inside_safe_branch"
+            or not op_inside_safe_branch):
+        return None
+
+    if kind == "null_check":
+        null_safe = (guarded_value in condition_text and
+                     ("!=" in condition_text or condition_text.strip("() ") == guarded_value))
+        if null_safe:
+            return "safe_branch_dominates_operation"
+    elif relation == "guarded_value_equals_operation_value" and ("<=" in condition_text or "<" in condition_text):
+        return "safe_branch_bounds"
+    return None
+
+
+def _verify_rejecting_guard_proof(
+    kind: str,
+    enforcement: str,
+    relation: str,
+    condition_text: str,
+    rejects: bool,
+    op_after_guard: bool,
+    has_alternative: bool,
+) -> Optional[str]:
+    valid_kinds = {"upper_bound_reject", "lower_bound_reject", "equality_reject"}
+    if (kind not in valid_kinds
+            or enforcement != "reject_before_operation"
+            or not rejects
+            or not op_after_guard
+            or has_alternative):
+        return None
+
+    comparison_ok = (
+        (kind == "upper_bound_reject" and ">" in condition_text) or
+        (kind == "lower_bound_reject" and "<" in condition_text) or
+        (kind == "equality_reject" and "!=" in condition_text)
+    )
+    expected_relation = (
+        "guarded_value_matches_compared_identity" if kind == "equality_reject"
+        else "guarded_value_equals_operation_value"
+    )
+    if comparison_ok and relation == expected_relation:
+        return "rejecting_guard_dominates_operation"
+    return None
+
+
+def _classify_counter_evidence_failure(guard: Any, operation: Any, alternative: Any) -> str:
+    if operation.start_byte < guard.start_byte:
+        return "counter_evidence_guard_after_operation"
+    if alternative and alternative.start_byte <= operation.start_byte < alternative.end_byte:
+        return "counter_evidence_branch_bypass"
+    return "counter_evidence_unsupported_pattern"
+
+
+def _resolve_target_nodes(
+    code_text: str, evidence: Dict[str, Any]
+) -> tuple[Optional[Any], Optional[Any], Optional[bytes], Optional[CounterEvidenceProof]]:
+    code_bytes, tree, error_proof = _parse_snippet(code_text)
+    if error_proof is not None:
+        return None, None, None, error_proof
+
+    guard_anchor = str(evidence.get("guard_anchor", "")).strip()
+    operation_anchor = str(evidence.get("protected_operation_anchor", "")).strip()
+    if not guard_anchor or not operation_anchor:
+        err = CounterEvidenceProof("invalid_contract", None, None, None, None, None,
+                                   "original", "counter_evidence_missing_anchor")
+        return None, None, None, err
+
+    guard, operation, anchor_err = _locate_guard_and_operation(tree, code_bytes, guard_anchor, operation_anchor)
+    if anchor_err is not None:
+        err = CounterEvidenceProof("invalid_contract", None, None, None, None, None,
+                                   "original", anchor_err)
+        return None, None, None, err
+
+    return guard, operation, code_bytes, None
+
+
+def _evaluate_proof_dominance(
+    guard: Any,
+    operation: Any,
+    code_bytes: bytes,
+    evidence: Dict[str, Any],
+) -> CounterEvidenceProof:
+    guarded_value = str(evidence.get("guarded_value", "")).strip()
+    operation_value = str(evidence.get("operation_value", "")).strip()
+    condition = guard.child_by_field_name("condition")
+    consequence = guard.child_by_field_name("consequence")
+    alternative = guard.child_by_field_name("alternative")
+
+    condition_text = _node_text(code_bytes, condition) if condition else ""
+    consequence_text = _node_text(code_bytes, consequence) if consequence else ""
+    operation_text = _node_text(code_bytes, operation)
+
+    if not _is_common_value(guarded_value, operation_value, condition_text, operation_text):
+        return CounterEvidenceProof("refuted", None, _proof_span(guard), _proof_span(operation),
+                                    guarded_value, operation_value, "original",
+                                    "counter_evidence_unrelated_value")
+
+    kind = str(evidence.get("defense_kind", ""))
+    enforcement = str(evidence.get("enforcement", ""))
+    relation = str(evidence.get("value_relation", ""))
+    op_inside_safe_branch = bool(consequence and consequence.start_byte <= operation.start_byte < consequence.end_byte)
+    op_after_guard = operation.start_byte > guard.end_byte
+    rejects = bool("return" in consequence_text or "goto" in consequence_text)
+
+    safe_label = _verify_safe_branch_proof(
+        kind, enforcement, relation, condition_text, guarded_value, op_inside_safe_branch
+    )
+    if safe_label:
+        return CounterEvidenceProof("deterministically_confirmed", safe_label,
+                                    _proof_span(guard), _proof_span(operation), guarded_value,
+                                    operation_value, "original")
+
+    reject_label = _verify_rejecting_guard_proof(
+        kind, enforcement, relation, condition_text, rejects, op_after_guard, bool(alternative)
+    )
+    if reject_label:
+        return CounterEvidenceProof("deterministically_confirmed", reject_label,
+                                    _proof_span(guard), _proof_span(operation), guarded_value,
+                                    operation_value, "original")
+
+    reason = _classify_counter_evidence_failure(guard, operation, alternative)
+    status = "refuted" if reason != "counter_evidence_unsupported_pattern" else "inconclusive"
+    return CounterEvidenceProof(status, None, _proof_span(guard), _proof_span(operation),
+                                guarded_value, operation_value, "original", reason)
+
+
+def extract_counter_evidence_proof(code_text: str, evidence: Dict[str, Any]) -> CounterEvidenceProof:
+    """Extract one V1 structural proof; never promote recovery/text matching to proof.
+
+    This intentionally does not consult ``FlowSignature.sanitizer_type``: the
+    signature is discovery metadata, while this routine checks the specific
+    guard, operation, operand, and control-flow relation claimed by the judge.
+    """
+    guard, operation, code_bytes, error_proof = _resolve_target_nodes(code_text, evidence)
+    if error_proof is not None:
+        return error_proof
+
+    return _evaluate_proof_dominance(guard, operation, code_bytes, evidence)

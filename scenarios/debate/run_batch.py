@@ -104,7 +104,56 @@ def _parse_args(cmd_args: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-reflector-in-process", dest="reflector_in_process", action="store_false", help="Execute ReflectorClient over HTTP network.")
     parser.add_argument("--reflector-url", default="http://127.0.0.1:8004", help="Base URL for Reflector microservice.")
     parser.add_argument("--gepa-dir", default="artifacts/gepa", help="Directory for GEPA ledger, Pareto frontier, and traces.")
+    parser.add_argument(
+        "--reflector-mode",
+        choices=["symmetric", "pro_only", "con_only"],
+        default="symmetric",
+        help="Debater injection target for reflector prompt (symmetric, pro_only, con_only).",
+    )
+    parser.add_argument(
+        "--slice-judge",
+        action="store_true",
+        default=True,
+        help="Enable Tree-sitter AST Program Slicing for Judge input.",
+    )
+    parser.add_argument(
+        "--no-slice-judge",
+        dest="slice_judge",
+        action="store_false",
+        help="Disable Tree-sitter AST Program Slicing (use unpruned code).",
+    )
+    parser.add_argument(
+        "--counter-evidence-validation-mode",
+        choices=["off", "shadow", "enforce_deterministic"],
+        default="enforce_deterministic",
+        help="Con defense receipt rollout mode (default: enforce_deterministic).",
+    )
     return parser.parse_args(cmd_args)
+
+
+def resolve_target_verdict(seed: dict) -> str:
+    """
+    Resolve the target verdict ('True' or 'False') for a seed based on
+    explicit configuration or semantic alignment between original_safety
+    and predicate polarity.
+    """
+    if "target_verdict" in seed and seed["target_verdict"] in ("True", "False"):
+        return seed["target_verdict"]
+
+    predicate = seed.get("predicate", "").lower()
+    is_negative = bool(
+        " not vulnerable" in predicate
+        or "**not** vulnerable" in predicate
+        or "is non-vulnerable" in predicate
+    )
+    original_safety = seed.get("original_safety", "").lower()
+
+    if original_safety == "safe":
+        return "True" if is_negative else "False"
+    elif original_safety == "vulnerable":
+        return "False" if is_negative else "True"
+
+    return "True"
 
 
 def _build_payload(
@@ -131,6 +180,8 @@ def _build_payload(
     else:
         pareto_prompt = get_static_baseline_prompt(taxonomy)
 
+    target_verdict = resolve_target_verdict(seed)
+
     return {
         "participants": {
             "pro_debater": "http://127.0.0.1:9019/",
@@ -148,18 +199,26 @@ def _build_payload(
             **({"attempts_path": args.attempts_out} if args.attempts_out else {}),
             "topic": seed["topic"],
             "predicate": seed["predicate"],
-            "target_verdict": "True",
+            "target_verdict": target_verdict,
             "target_dimension": "Security Invariants",
             "num_rounds": 2,
             "max_refinements": 1,
             "output_file": args.output,
             "taxonomy_bucket": taxonomy,
+            # Seed metadata is the acceptance authority for Con evidence; never
+            # infer a defense obligation from judge prose at decision time.
+            "defense_obligation": seed.get("defense_obligation"),
+            "counter_evidence_validation_mode": getattr(
+                args, "counter_evidence_validation_mode", "shadow"
+            ),
             "reflector_prompt": pareto_prompt,
+            "reflector_mode": getattr(args, "reflector_mode", "symmetric"),
             "active_mutation_id": active_mutation_id,
             "gepa_dir": getattr(args, "gepa_dir", "artifacts/gepa"),
             "reflector": getattr(args, "reflector", True),
             "reflector_in_process": getattr(args, "reflector_in_process", True),
             "reflector_url": getattr(args, "reflector_url", "http://127.0.0.1:8004"),
+            "slice_judge": getattr(args, "slice_judge", True),
         },
     }
 

@@ -15,6 +15,33 @@ class DebaterScore(BaseModel):
     total_score: float
     critique: str # GEPA: Adjudication of debater performance
 
+
+class CounterEvidence(BaseModel):
+    """Structured, code-anchored defense claim used only for Con decisions."""
+
+    defense_kind: Literal[
+        "upper_bound_reject", "lower_bound_reject", "range_guarded_operation",
+        "null_check", "equality_reject", "lock_before_shared_access",
+    ]
+    guard_anchor: str
+    guarded_value: str
+    protected_operation_anchor: str
+    operation_value: str
+    enforcement: Literal[
+        "reject_before_operation", "operation_inside_safe_branch",
+        "validated_value_forwarded", "lock_held_at_operation",
+    ]
+    invariant: str
+    predicate_precondition: str
+    value_relation: Literal[
+        "guarded_value_equals_operation_value",
+        "guarded_value_bounds_offset_plus_width",
+        "guarded_value_matches_compared_identity",
+        "guarded_value_protects_shared_state",
+    ]
+    counterfactual: str
+
+
 class DebateEval(BaseModel):
     thinking_process: str # GEPA: Step-by-step thinking before concluding
     pro_debater: DebaterScore
@@ -32,6 +59,7 @@ class DebateEval(BaseModel):
     anchors: list[str] = Field(min_length=2) # Concrete evidence hooks (must appear in code)
     verifier_report: str = "not_applicable"
     support_level: Literal["supported", "unsupported", "inconclusive"] = "supported"
+    counter_evidence: Optional[CounterEvidence] = None
 
 
 class VerifierReport(BaseModel):
