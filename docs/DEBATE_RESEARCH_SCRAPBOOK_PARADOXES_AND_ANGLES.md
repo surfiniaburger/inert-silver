@@ -114,7 +114,7 @@ Rather than pursuing ad-hoc prompt variations, Chapter 2 is formalized as a syst
 | **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep1` | 2026-09-13 | 42 | GEPA Live (Sliced) | 80.0% | 40/50 | 21,844 | 0/40 (0.0%) |
 | **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep2` | 2026-09-14 | 43 | GEPA Live (Sliced) | 76.0% | 38/50 | 24,329 | 0/38 (0.0%) |
 | **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep3` | 2026-09-21 | 44 | GEPA Live (Sliced) | 78.0% | 39/50 | 20,568 | 0/39 (0.0%) |
-| **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep4` | PENDING | 45 | GEPA Live (Sliced) | TBD | TBD | TBD | TBD |
+| **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep4` | 2026-09-21 | 45 | GEPA Live (Sliced) | 90.0% | 45/50 | 18,526 | 0/45 (0.0%) |
 | **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep5` | PENDING | 46 | GEPA Live (Sliced) | TBD | TBD | TBD | TBD |
 
 ---
