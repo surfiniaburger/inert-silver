@@ -97,16 +97,18 @@ Rather than pursuing ad-hoc prompt variations, Chapter 2 is formalized as a syst
 - **Mechanism:** The verifier or pre-filter pre-extracts critical line numbers from the AST slice (e.g., branch conditions, memory allocations) and explicitly instructs debaters: *"Ground your claim on lines [X, Y, or Z]"*.
 - **Hypothesis:** Introduces the graph directly into the debater evidence-selection interface, rather than merely using it to slice Judge context.
 
-### Angle 3: True Pinned Pareto (`--pin-pareto`)
-- **Question:** *Is the benefit coming from the evolved prompt itself (warm prior), or from continuously adapting it online?*
-- **Mechanism:** Freeze the Pareto frontier at mutation step 669, run stationary evaluation across all 50 seeds with zero Reflector calls, zero SQLite mutations, and zero live prompt edits.
-- **Hypothesis:** Decouples the *Warm Pareto Prior Benefit* from the *Online Adaptation Benefit*.
-- **Empirical Resolution (Replicate 1, Seed 42, $N=50$):**
-  - **Yield:** **72.0% (36/50)** — matches single-replicate baseline, trailing Regime 2's mean of **80.4% ± 5.5%**.
-  - **Round 0 Yield:** **56.0% (28/50)** — exactly matches Regime 2 (57.6%), confirming the **Round 0 Anchor Trap / Instruction Competition** is inherent to the evolved prompt's complexity.
-  - **Refinement Recovery:** Drops from **50.4% (Regime 2)** down to **36.4% (8/22 in Regime 3)** because failing episodes retry with the *unmutated warm prompt* rather than receiving a targeted graph-repaired variant.
-  - **Token Burn:** Collapses from **21,571 tokens/seed (Regime 2) down to 16,822 tokens/seed (Regime 3)**, essentially equal to the pure baseline (16,742).
-  - **Conclusion:** The high yield of Regime 2 is driven by the **active closed-loop Reflector mutation engine** during refinement, not merely the passive presence of the warm prompt prior. Full report: [`reports/debate_benchmark_50_seed_pinned_pareto.md`](../reports/debate_benchmark_50_seed_pinned_pareto.md).
+### Angle 3: Final Pinned Pareto (`--pin-pareto`, Terminal 669-Entry Frontier)
+- **Question:** *Can accumulated prompt knowledge replace online adaptation? Does the final evolved warm prior reproduce the high yield and recovery of the active online system without live prompt mutation?*
+- **Mechanism:** Freeze the terminal Pareto frontier produced after the 5 active online replicates at mutation step 669. Run stationary evaluation across all 50 seeds with zero Reflector calls, zero mutation writes, and zero prompt edits.
+- **Empirical Findings (Replicate 1, Seed 42, $N=50$):**
+  - **Overall Yield:** **72.0% (36/50)** — compared with **80.4% ± 5.5% (40.2/50)** under 5-replicate Active Online, providing evidence that the warm Pareto prior alone does not reproduce the yield observed under active adaptation.
+  - **Round 0 Equivalence (56.0% vs. 57.6%):** Initial pass yields are nearly identical between pinned (56.0%) and online (57.6%), both trailing the cold baseline (72.0%). This **supports the Instruction Competition Hypothesis**: specialized vulnerability directives are associated with lower Round-0 anchor compliance than the terse baseline.
+  - **The Decoupling Emerges After Failure:** 
+    - **Pinned:** Retrying with the *identical warm prompt* achieved an **8/22 recovery rate (36.4%)**.
+    - **Active Online:** Graph diagnosis + targeted prompt mutation achieved a **57/113 recovery rate (50.4%)**.
+    - *Insight:* The Reflector's primary function is not optimizing initial adjudication, but acting as a runtime epistemic control loop that intervenes once initial adjudication fails.
+  - **Token Economics:** Mean consumption was **16,822.1 tokens/seed** (pinned) vs. **17,260.1 tokens/seed** (online) — a direct difference of only **438 tokens/seed**. However, tokens per accepted row were higher for pinned (**23,364 vs. 21,571 tokens/row**), demonstrating the core tradeoff: *adaptation costs modest tokens per seed, but lack of adaptation costs accepted ground-truth rows*.
+  - **Invariant Integrity:** 0 accepted logic errors (INV-1 = 0.0000, 36/36 rows clean), 100% anchor grounding. Full report: [`reports/debate_benchmark_50_seed_pinned_pareto.md`](../reports/debate_benchmark_50_seed_pinned_pareto.md).
 
 ---
 
@@ -122,19 +124,50 @@ Rather than pursuing ad-hoc prompt variations, Chapter 2 is formalized as a syst
 | **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep3` | 2026-09-21 | 44 | GEPA Live (Sliced) | 78.0% | 39/50 | 20,568 | 0/39 (0.0%) |
 | **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep4` | 2026-09-21 | 45 | GEPA Live (Sliced) | 90.0% | 45/50 | 18,526 | 0/45 (0.0%) |
 | **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep5` | 2026-09-21 | 46 | GEPA Live (Sliced) | 78.0% | 39/50 | 22,586 | 0/39 (0.0%) |
-| **Regime 3 (Angle 3)** | `unrun-pinned-pareto-50-rep1` | 2026-09-21 | 42 | Evolved Warm Frozen (v669) | 72.0% | 36/50 | 23,364 | 0/36 (0.0%) |
+| **Regime 3 (Angle 3)** | `unrun-pinned-pareto-50-rep1` | 2026-09-21 | 42 | Terminal Pinned (v669) | 72.0% | 36/50 | 23,364 | 0/36 (0.0%) |
 
 ---
 
-## 6. Execution Roadmap
+## 6. Controlled Decomposition Matrix & Chapter 2 Roadmap
 
-1. **Chapter 1: Metacognitive Debate Dynamics (Completed)**
-   - Completed all 5 replicates of Regime 1 (Stationary Baseline, $N=250$, yield: $78.4\% \pm 5.2\%$).
-   - Completed all 5 replicates of Regime 2 (Active Online Adaptation, $N=250$, yield: $80.4\% \pm 5.5\%$).
-   - Implemented and evaluated Angle 3 (True Pinned Pareto, $N=50$, yield: $72.0\%$).
-   - Rigorously proved: Active online reflection drives the high recovery rate ($50.4\%$), whereas the warm prior alone suffers from Instruction Competition without online repair.
+### A. The 4-Condition Clean Decomposition
+To cleanly separate **prior quality**, **accumulated knowledge**, and **runtime adaptation**, the controlled evaluation space is formalized as:
 
-2. **Chapter 2: Structural Grounding Interventions (Next)**
-   - **Angle 1: Formatting Shield (Output Contract Enforcement):** Enforce immutable anchor-first block syntax to prevent Instruction Competition from dropping Round 0 anchors.
-   - **Angle 2: Targeted Syntactic Grounding:** Pass candidate AST lines directly to debaters to guide search.
-   - **Target Benchmark:** Evaluate Angle 1 + Angle 3 to determine whether the Formatting Shield recovers the 16% Round 0 yield drop without paying the Refinement Tax.
+```text
+                               BARRED-Fleet
+                                    │
+                         ┌──────────┴──────────┐
+                         │                     │
+                     PROMPT PRIOR          ADAPTATION
+                         │                     │
+                   ┌─────┴─────┐               │
+                   │           │               │
+               baseline      warm             live
+                 v0        v355/v669        reflector
+                   │           │               │
+                   ▼           ▼               ▼
+                  R0          R0              R0
+                   │           │               │
+                   └───────────┼───────────────┘
+                               │
+                            failure
+                               │
+                     ┌─────────┴─────────┐
+                     │                   │
+                 frozen retry         mutation
+                     │                   │
+                   R1 same             R1 new
+                     │                   │
+                     ▼                   ▼
+```
+
+1. **Condition A: Cold Baseline (`baseline_v0`)** — High Round-0 compliance (72.0%), low failure recovery (22.9%), no prior specialization.
+2. **Condition B: Frozen Initial Warm (`v355`)** — Isolates starting prior quality without subsequent accumulation.
+3. **Condition C: Frozen Terminal Warm (`v669`)** — Evaluates whether 669 accumulated mutations can replace live adaptation. (Result: 72.0% yield, 36.4% recovery).
+4. **Condition D: Active Dynamic Adaptation (`v355 → mutation`)** — Full runtime adaptation: 80.4% yield, 50.4% recovery.
+
+### B. Chapter 2: Structural Grounding Interventions (Next)
+With Angle 3 having established that the warm prior induces Round-0 compliance drops that online mutation subsequently repairs, Chapter 2 directly targets the root cause:
+- **Angle 1: Formatting Shield (Output Contract Enforcement):** Enforce immutable anchor-first block syntax to prevent Instruction Competition from dropping Round 0 anchors.
+- **Angle 2: Targeted Syntactic Grounding:** Pass candidate AST lines directly to debaters to guide search.
+- **Target Benchmark:** Evaluate Angle 1 + Angle 3 to determine whether the Formatting Shield recovers the 16% Round 0 yield drop without paying the Refinement Tax.
