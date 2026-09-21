@@ -26,43 +26,62 @@ We define two distinct historical epochs:
 
 ---
 
-## 2. Empirical Findings & Paradoxes Uncovered in Chapter 1
+## 2. Empirical Telemetry & Core Hypotheses (Chapter 1)
 
-### Paradox 1: The "Instruction Overload / Round 0 Anchor Trap"
-- **Observation:**
-  - In Regime 1 (`baseline_v0`), Gemma-4-E4B debaters receive a concise, uncluttered prompt. They immediately focus on verbatim code extraction from `<Untrusted_Code>`. The **Round 0 first-pass yield was $72.0\%$** (36/50 accepted on attempt 1). Only 14 seeds required Round 1 refinement.
-  - In Regime 2 (GEPA evolved prompt `v355`), debaters undergo instruction bloat. The mutated prompts emphasize complex vulnerability reasoning (memory layout invariants, race windows, sanitization bypassing).
-  - **The Maladaptive Behavior:** The 4B debaters become "verbose security essayists." They produce elaborate multi-paragraph explanations of vulnerability theory, but in doing so, they frequently **fail to quote two verbatim lines from `<Untrusted_Code>`**.
-  - **The Consequence:** Round 0 anchor normalization rejections doubled (from 3–4 up to 8–10 per run). First-pass yield dropped from $72.0\%$ to **$52.0\% - 62.0\%$**, forcing almost half the seeds into Round 1 refinements.
+### Telemetry Finding 1: The "Refinement Tax" Tradeoff
+- **Empirical Observation:**
+  - In Regime 1 (Stationary Slicing Baseline), first-pass Round 0 yield was high ($72.0\%$, 36/50 seeds accepted on attempt 1), with only 14 seeds requiring refinement.
+  - In Regime 2 (Active Online Adaptation with evolved prompt `v355`), Round 0 rejections increased:
+    - Rep 1: 24 initial failure episodes $\to$ 14 recovered on Round 1 ($58.3\%$).
+    - Rep 2: 26 initial failure episodes $\to$ 7 recovered on Round 1 ($26.9\%$).
+    - Cumulative ($N=2$): **50 Round 0 failure episodes triggered refinement; 21 were recovered on Round 1 ($42.0\%$ recovery rate)**.
+- **The Tradeoff:**
+  - The live Reflector is demonstrably effective at error recovery (rescuing $42\%$ of otherwise lost runs).
+  - However, **recovery capability $\neq$ efficiency**. Each Round 1 debate attempt burns $\approx 11,000$ tokens.
+  - Incurring $\approx 25$ failure episodes per replicate costs $\approx 275,000$ tokens of refinement burn, offsetting the token savings achieved by slicing the Judge context.
 
-### Paradox 2: The "Refinement Tax" vs. Slicing Token Efficiency
-- **Observation:**
-  - Slicing code down to the semantic dependency graph saves $\approx 3,000$ to $4,000$ tokens per row at the Judge turn ($21,411$ tokens/row in Regime 1 vs. $25,300$ in unpruned baseline).
-  - The live Reflector Agent in Regime 2 is remarkably competent at error recovery: it pinpoints the missing anchors and rescues $42.0\%$ of failed seeds on Round 1.
-  - **The Hidden Cost:** Each second-round debate attempt burns $\approx 11,000$ tokens (Pro argument + Con rebuttal + Judge evaluation + Verifier run).
-  - **The Net Effect:** Incurring 24 to 26 refinements per run adds $\approx 260,000$ to $286,000$ tokens of overhead, completely consuming the token savings achieved by slicing the Judge context.
-  ```
-  Regime 1 (Stationary Slicing): 21,411 tokens/accepted row (14 refinements)
-  Regime 2 (Online Learning):   23,086 tokens/accepted row (25 refinements)
-  Net Delta:                   +1,675 tokens/row due to Refinement Tax
-  ```
+### Quantitative Metric: Recovery Efficiency ($\tau_{\text{rec}}$)
+To evaluate the economic viability of the Reflector beyond crude total token counts, we formalize **Tokens per Recovered Episode**:
 
-### Paradox 3: The Non-Monotonic Score Dip ($5.12 \to 4.86 \to 5.79$)
-- **Observation:**
-  - In `integer_arithmetic`, the Pareto frontier score dropped from $5.12$ (baseline) to $4.86$ (Rep 1) before recovering to $5.79$ (Rep 2).
-  - **Mechanism Explanation:** The score is calculated by the GEPA Pareto ledger using `outcome_sign()`:
-    $$\text{Reward} = +1.0 \quad (\text{VALID\_ACCEPT}), \quad -0.5 \quad (\text{RETRYABLE\_FAILURE})$$
-  - When an evolved prompt causes an initial Round 0 failure on a seed, it incurs a $-0.5$ penalty. Even if the Reflector recovers the seed on Round 1 ($+1.0$), the net episode gain is dampened. Only when subsequent replicates validate the mutation across multiple seeds does the score surge past the baseline.
+$$\text{Recovery Benefit} = \text{Episodes}_{\text{Round 1 Accepted}}$$
+$$\text{Refinement Cost} = \sum \text{Tokens}_{\text{Round 1 Attempts}}$$
+$$\tau_{\text{rec}} = \frac{\text{Refinement Cost}}{\text{Recovery Benefit}} = \mathbf{\text{Tokens Per Recovered Episode}}$$
+
+- Across Reps 1 & 2: $\approx 550,000$ refinement tokens were spent to yield 21 recovered rows:
+  $$\tau_{\text{rec}} \approx \mathbf{26,190 \text{ tokens / recovered episode}}$$
+- This provides an actionable engineering benchmark: any intervention in Chapter 2 that prevents an episode from failing Round 0 saves $\approx 26,000$ tokens on that seed.
+
+### Core Systems Hypothesis: Induced vs. Repaired Failures
+> **Working Hypothesis:** *Online adaptation is recovering failed attempts, but the instruction structure of the evolved prompt may be inducing the very syntactic failures that the Reflector subsequently repairs.*
+
+**Competing Explanations (To be Isolated in Chapter 2):**
+1. *Instruction Competition:* Advanced vulnerability analysis directives compete for model attention against the strict invariant requirement to cite verbatim line anchors.
+2. *Context / Instruction Bloat:* The length of cumulative mutations increases prompt token mass, diluting syntactic compliance.
+3. *Output Schema Absence:* Without an explicit output format contract, the model prioritizes natural language prose over exact bracketed citation syntax.
+4. *Reasoning Burden:* Deeper semantic analysis increases generation length, pushing the model away from terse extraction.
 
 ---
 
-## 3. The Three Architectural Angles (Chapter 2 Design Space)
+## 3. The 6-Condition Factorial Ablation Matrix (Chapter 2 Design Space)
 
-To systematically eliminate the Round 0 Anchor Trap without sacrificing the cognitive depth of evolved debater prompts, we have formulated three distinct architectural angles:
+Rather than pursuing ad-hoc prompt variations, Chapter 2 is formalized as a systematic factorial matrix to isolate the contribution of each architectural layer:
 
-### Angle 1: The Formatting Shield (Structural Ordering)
-- **Hypothesis:** Small 4B models allocate attention primarily to the initial and trailing tokens of their prompt. If the anchor requirement is buried in paragraph 3 of an evolved prompt, it suffers from attention decay.
-- **Implementation:** Prepend an immutable, invariant header to all debater outputs before argument generation:
+| Condition | Description | AST Slice | Warm Pareto | Live Reflector | Formatting Shield | Syntactic Anchoring | Core Question Evaluated |
+| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **A** | Unpruned Control | ✗ | ✗ | ✗ | ✗ | ✗ | Historical unpruned baseline ($N=50$) |
+| **B** | Sliced Stationary | ✓ | ✗ | ✗ | ✗ | ✗ | **Regime 1:** What is the pure effect of AST Program Slicing? ($78.4\% \pm 5.2\%$) |
+| **C** | Pinned Pareto | ✓ | ✓ | ✗ | ✗ | ✗ | **Angle 3:** Is the benefit from the evolved prompt prior or active online mutation? |
+| **D** | Active Online | ✓ | ✓ | ✓ | ✗ | ✗ | **Regime 2:** What is the combined effect of live mutation + reflector recovery? |
+| **E** | Formatting Shield | ✓ | ✓ | ✓ | ✓ | ✗ | **Angle 1:** Does an invariant output contract eliminate Round 0 anchor drops? |
+| **F** | Guided Anchoring | ✓ | ✓ | ✓ | ✓ | ✓ | **Angle 2:** Does deterministic graph grounding assist evidence selection? |
+
+---
+
+## 4. Formal Definition of Architectural Angles
+
+### Angle 1: The Formatting Shield (Output Contract Enforcement)
+- **Question:** *Can the same reasoning prompt produce fewer anchor failures simply by moving invariant constraints into an explicit output contract?*
+- **Mechanism:** Enforce an immutable, anchor-first output structure:
   ```markdown
   ### MANDATORY VERBATIM ANCHOR BLOCK
   [ANCHOR_1]: `<exact line from untrusted code>`
@@ -71,15 +90,17 @@ To systematically eliminate the Round 0 Anchor Trap without sacrificing the cogn
   ### VULNERABILITY ARGUMENT
   <debater analysis...>
   ```
-- **Goal:** Drive Round 0 anchor rejections to 0 without altering the security reasoning text.
+- **Hypothesis:** Separates the syntactic constraint from the reasoning task, eliminating Round 0 anchor rejections without restricting cognitive reasoning depth.
 
-### Angle 2: Targeted Syntactic Anchoring
-- **Hypothesis:** Debaters fail anchor validation not because they cannot quote code, but because they quote lines outside the AST slice or summarize lines instead of quoting verbatim.
-- **Implementation:** The verifier pre-extracts top candidate line numbers from the AST slice (e.g., branch conditions, memory allocations) and explicitly instructs debaters: "Ground your claim on lines [X, Y, or Z]".
+### Angle 2: Targeted Syntactic Anchoring (Evidence Selection Interface)
+- **Question:** *Can deterministic structural information reduce the model's search space for evidence selection?*
+- **Mechanism:** The verifier or pre-filter pre-extracts critical line numbers from the AST slice (e.g., branch conditions, memory allocations) and explicitly instructs debaters: *"Ground your claim on lines [X, Y, or Z]"*.
+- **Hypothesis:** Introduces the graph directly into the debater evidence-selection interface, rather than merely using it to slice Judge context.
 
 ### Angle 3: True Pinned Pareto (`--pin-pareto`)
-- **Hypothesis:** The live Reflector introduces exploratory noise during production runs. The highest-performing static configuration may be a *frozen snapshot* of the best evolved prompt, operating in zero-mutation stationary inference mode.
-- **Implementation:** Benchmark the frozen Pareto frontier ledger across 5 replicates without initializing `ReflectorAgent` or logging mutations to the database.
+- **Question:** *Is the benefit coming from the evolved prompt itself (warm prior), or from continuously adapting it online?*
+- **Mechanism:** Freeze the Pareto frontier at mutation step 483+, run stationary evaluation across all 50 seeds with zero Reflector calls, zero SQLite mutations, and zero live prompt edits.
+- **Hypothesis:** Decouples the *Warm Pareto Prior Benefit* from the *Online Adaptation Benefit*.
 
 ---
 
@@ -92,7 +113,7 @@ To systematically eliminate the Round 0 Anchor Trap without sacrificing the cogn
 | **Regime 1 ($N=50$)** | `unrun-sliced-baseline-rep1..5` | 2026-09-11 | 42..46 | `baseline_v0` (Sliced) | 78.4% | 196/250 | 21,411 | 0/196 (0.0%) |
 | **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep1` | 2026-09-13 | 42 | GEPA Live (Sliced) | 80.0% | 40/50 | 21,844 | 0/40 (0.0%) |
 | **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep2` | 2026-09-14 | 43 | GEPA Live (Sliced) | 76.0% | 38/50 | 24,329 | 0/38 (0.0%) |
-| **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep3` | PENDING | 44 | GEPA Live (Sliced) | TBD | TBD | TBD | TBD |
+| **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep3` | 2026-09-21 | 44 | GEPA Live (Sliced) | 78.0% | 39/50 | 20,568 | 0/39 (0.0%) |
 | **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep4` | PENDING | 45 | GEPA Live (Sliced) | TBD | TBD | TBD | TBD |
 | **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep5` | PENDING | 46 | GEPA Live (Sliced) | TBD | TBD | TBD | TBD |
 
