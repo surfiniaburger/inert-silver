@@ -29,8 +29,10 @@ from scenarios.debate.reflector_schemas import (
 from scenarios.debate.run_batch import (
     BatchContext,
     _build_payload,
+    _init_gepa_components,
     _parse_args,
     _process_seed,
+    _record_gepa_reflector_trace,
 )
 
 
@@ -335,3 +337,106 @@ def test_client_unpack_task_event_extracts_datapart_metadata():
         "attempt_index": 2,
         "score": 4.5,
     }
+
+
+def test_parse_args_pin_pareto():
+    """Verify --pin-pareto CLI argument parsing."""
+    default_args = _parse_args([])
+    assert default_args.pin_pareto is False
+
+    pinned_args = _parse_args(["--pin-pareto"])
+    assert pinned_args.pin_pareto is True
+
+
+def test_init_gepa_components_pin_pareto(temp_gepa_dir):
+    """When --pin-pareto is set, init returns ParetoRegistry and None for ReflectorClient."""
+    args = _parse_args(["--pin-pareto", "--gepa-dir", str(temp_gepa_dir)])
+    registry, client = _init_gepa_components(args)
+    assert registry is not None
+    assert client is None
+
+
+def test_build_payload_with_pin_pareto(temp_gepa_dir):
+    """When pin_pareto is enabled, warm Pareto prompt is injected and reflector mutation is disabled."""
+    registry = ParetoRegistry(gepa_dir=temp_gepa_dir)
+    registry.register_pareto_prompt(
+        taxonomy="input_validation",
+        prompt="WARM PINNED PARETO PROMPT FOR INPUT VALIDATION",
+        variant_id="var_input_pinned_999",
+        score=2.5,
+        rationale="Warm Pareto prior",
+        topological_rule="RULE_COMMAND_SANITIZATION",
+    )
+
+    args = _parse_args(["--pin-pareto", "--gepa-dir", str(temp_gepa_dir)])
+    seed = {
+        "topic": "os.system(user_cmd);",
+        "predicate": "command_injection in input validation",
+    }
+    payload = _build_payload(
+        args=args,
+        item_seed=200,
+        checkpoint_path="artifacts/checkpoints/200.json",
+        record_path="artifacts/runs/200.json",
+        batch_started_at="2026-09-21T12:00:00Z",
+        seed=seed,
+        reflector_client=None,
+        pareto_registry=registry,
+    )
+
+    assert payload["config"]["taxonomy_bucket"] == "input_validation"
+    assert payload["config"]["active_mutation_id"] == "var_input_pinned_999"
+    assert payload["config"]["reflector_prompt"] == "WARM PINNED PARETO PROMPT FOR INPUT VALIDATION"
+    assert payload["config"]["pin_pareto"] is True
+    assert payload["config"]["reflector"] is False
+
+
+@pytest.mark.asyncio
+async def test_record_gepa_reflector_trace_skipped_on_pin_pareto(temp_gepa_dir):
+    """When pin_pareto is enabled, trace recording is skipped to keep frontier pristine."""
+    mock_client = MagicMock()
+    mock_client.record_attempt_and_classify_outcome = AsyncMock()
+
+    args = _parse_args(["--pin-pareto", "--run-id", "test-pin-trace"])
+    ctx = BatchContext(
+        args=args,
+        batch_started_at="2026-09-21T12:00:00Z",
+        processed_predicates=set(),
+        manifest={"items": []},
+        manifest_path=str(temp_gepa_dir / "manifest.json"),
+        manifest_lock=asyncio.Lock(),
+        total_seeds=1,
+        reflector_client=mock_client,
+    )
+
+    seed = {"predicate": "test_predicate", "topic": "test_topic"}
+    payload = {"config": {"active_mutation_id": "var_pinned_123", "reflector_prompt": "prompt"}}
+    result = {"status": "completed", "decision": "accepted"}
+
+    await _record_gepa_reflector_trace(ctx, seed, 42, payload, result, "completed", 0)
+    mock_client.record_attempt_and_classify_outcome.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_judge_pin_pareto_bypasses_mutation_and_promotion(temp_gepa_dir):
+    """Judge in pin_pareto mode does not mutate prompt on retry and does not promote to registry."""
+    judge = DebateJudgeADK()
+    mock_registry = MagicMock()
+
+    ctx = MagicMock()
+    ctx.pin_pareto = True
+    ctx.reflector_prompt = "PINNED_WARM_PROMPT"
+    ctx.active_mutation_id = "var_warm_123"
+    ctx.max_refinements = 2
+    ctx.reflector_client = MagicMock()
+    ctx.reflector_client.registry = mock_registry
+
+    updater = MagicMock()
+    updater.update_status = AsyncMock()
+
+    # Mutation test: verify early return
+    await judge._try_mutate_reflector_prompt(ctx, 0, "test failure", updater)
+    assert ctx.reflector_prompt == "PINNED_WARM_PROMPT"
+    assert ctx.active_mutation_id == "var_warm_123"
+    ctx.reflector_client.reflect.assert_not_called()
+

@@ -128,6 +128,12 @@ def _parse_args(cmd_args: list[str] | None = None) -> argparse.Namespace:
         default="enforce_deterministic",
         help="Con defense receipt rollout mode (default: enforce_deterministic).",
     )
+    parser.add_argument(
+        "--pin-pareto",
+        action="store_true",
+        default=False,
+        help="Pin warm Pareto prompts from --gepa-dir without live reflection or prompt mutations.",
+    )
     return parser.parse_args(cmd_args)
 
 
@@ -164,16 +170,23 @@ def _build_payload(
     batch_started_at: str,
     seed: dict,
     reflector_client: ReflectorClient | None = None,
+    pareto_registry: ParetoRegistry | None = None,
 ) -> dict:
     predicate = seed.get("predicate", "")
     taxonomy = classify_taxonomy_bucket(predicate)
     pareto_prompt = ""
     active_mutation_id = "baseline_v0"
 
+    registry = None
     if reflector_client is not None and reflector_client.registry is not None:
+        registry = reflector_client.registry
+    elif pareto_registry is not None:
+        registry = pareto_registry
+
+    if registry is not None:
         try:
-            pareto_prompt = reflector_client.registry.get_pareto_prompt(taxonomy)
-            active_mutation_id = reflector_client.registry.get_pareto_variant_id(taxonomy)
+            pareto_prompt = registry.get_pareto_prompt(taxonomy)
+            active_mutation_id = registry.get_pareto_variant_id(taxonomy)
         except Exception:
             pareto_prompt = get_static_baseline_prompt(taxonomy)
             active_mutation_id = "baseline_v0"
@@ -215,7 +228,8 @@ def _build_payload(
             "reflector_mode": getattr(args, "reflector_mode", "symmetric"),
             "active_mutation_id": active_mutation_id,
             "gepa_dir": getattr(args, "gepa_dir", "artifacts/gepa"),
-            "reflector": getattr(args, "reflector", True),
+            "pin_pareto": getattr(args, "pin_pareto", False),
+            "reflector": False if getattr(args, "pin_pareto", False) else getattr(args, "reflector", True),
             "reflector_in_process": getattr(args, "reflector_in_process", True),
             "reflector_url": getattr(args, "reflector_url", "http://127.0.0.1:8004"),
             "slice_judge": getattr(args, "slice_judge", True),
@@ -305,7 +319,7 @@ async def _record_gepa_reflector_trace(
     status: str,
     i: int,
 ) -> None:
-    if ctx.reflector_client is None:
+    if getattr(ctx.args, "pin_pareto", False) or ctx.reflector_client is None:
         return
 
     predicate = seed.get("predicate", "")
@@ -409,7 +423,7 @@ async def _process_seed(
         await write_manifest("running")
 
         payload = _build_payload(
-            ctx.args, item_seed, checkpoint_path, record_path, ctx.batch_started_at, seed, ctx.reflector_client
+            ctx.args, item_seed, checkpoint_path, record_path, ctx.batch_started_at, seed, ctx.reflector_client, ctx.pareto_registry
         )
 
         try:
@@ -428,10 +442,13 @@ async def _process_seed(
 
 
 def _init_gepa_components(args: argparse.Namespace) -> tuple[Optional[ParetoRegistry], Optional[ReflectorClient]]:
-    if not args.reflector:
+    if not args.reflector and not getattr(args, "pin_pareto", False):
         return None, None
     gepa_path = Path(args.gepa_dir)
     pareto_registry = ParetoRegistry(gepa_dir=gepa_path)
+    if getattr(args, "pin_pareto", False):
+        print(f"GEPA Pinned Pareto enabled: frozen frontier from '{args.gepa_dir}' (no live reflection/mutations).")
+        return pareto_registry, None
     reflector_client = ReflectorClient(
         registry=pareto_registry,
         base_url=args.reflector_url,
@@ -534,7 +551,7 @@ async def run_batch():
 
     await asyncio.gather(*(_process_seed(sem, i, s, ctx) for i, s in enumerate(seeds)))
 
-    if pareto_registry is not None:
+    if pareto_registry is not None and not getattr(args, "pin_pareto", False):
         try:
             pareto_registry.sync_pareto_frontier()
             print(f"GEPA Pareto frontier synced to '{args.gepa_dir}/pareto_frontier.json'.")

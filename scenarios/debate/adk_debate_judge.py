@@ -817,8 +817,9 @@ class _EvalContext:
         self.reflector_in_process = _truthy(req.config.get("reflector_in_process", True))
         self.reflector_url = str(req.config.get("reflector_url", "http://127.0.0.1:8004"))
         self.slice_judge = _truthy(req.config.get("slice_judge", True))
+        self.pin_pareto = _truthy(req.config.get("pin_pareto", False))
         self.reflector_client: Optional[ReflectorClient] = None
-        if _truthy(req.config.get("reflector", False)):
+        if not self.pin_pareto and _truthy(req.config.get("reflector", False)):
             try:
                 registry = ParetoRegistry(gepa_dir=self.gepa_dir)
                 self.reflector_client = ReflectorClient(
@@ -843,6 +844,8 @@ class _EvalContext:
     def append_attempt(self, obj: dict) -> None:
         enriched = dict(obj)
         enriched.setdefault("active_mutation_id", self.active_mutation_id)
+        if getattr(self, "pin_pareto", False):
+            enriched.setdefault("pin_pareto", True)
         enriched.setdefault(
             "metadata",
             _run_metadata(
@@ -1709,7 +1712,7 @@ Never return fewer than 2 verbatim anchors in 'anchors'.
 
         reflector = getattr(ctx, "reflector_client", None)
         active_mut = getattr(ctx, "active_mutation_id", "baseline_v0")
-        if reflector and reflector.registry and active_mut != "baseline_v0":
+        if not getattr(ctx, "pin_pareto", False) and reflector and reflector.registry and active_mut != "baseline_v0":
             try:
                 score = 1.0 + (0.5 if i > 0 else 0.0)
                 reflector.registry.register_pareto_prompt(
@@ -1941,7 +1944,7 @@ Never return fewer than 2 verbatim anchors in 'anchors'.
         last_judge_reason: str,
         updater: TaskUpdater,
     ) -> None:
-        if i >= ctx.max_refinements or getattr(ctx, "reflector_client", None) is None:
+        if getattr(ctx, "pin_pareto", False) or i >= ctx.max_refinements or getattr(ctx, "reflector_client", None) is None:
             return
 
         try:
