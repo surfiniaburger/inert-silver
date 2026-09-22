@@ -100,15 +100,15 @@ Rather than pursuing ad-hoc prompt variations, Chapter 2 is formalized as a syst
 ### Angle 3: Final Pinned Pareto (`--pin-pareto`, Terminal 669-Entry Frontier)
 - **Question:** *Can accumulated prompt knowledge replace online adaptation? Does the final evolved warm prior reproduce the high yield and recovery of the active online system without live prompt mutation?*
 - **Mechanism:** Freeze the terminal Pareto frontier produced after the 5 active online replicates at mutation step 669. Run stationary evaluation across all 50 seeds with zero Reflector calls, zero mutation writes, and zero prompt edits.
-- **Empirical Findings (Replicate 1, Seed 42, $N=50$):**
-  - **Overall Yield:** **72.0% (36/50)** — compared with **80.4% ± 5.5% (40.2/50)** under 5-replicate Active Online, providing evidence that the warm Pareto prior alone does not reproduce the yield observed under active adaptation.
-  - **Round 0 Equivalence (56.0% vs. 57.6%):** Initial pass yields are nearly identical between pinned (56.0%) and online (57.6%), both trailing the cold baseline (72.0%). This **supports the Instruction Competition Hypothesis**: specialized vulnerability directives are associated with lower Round-0 anchor compliance than the terse baseline.
-  - **The Decoupling Emerges After Failure:** 
-    - **Pinned:** Retrying with the *identical warm prompt* achieved an **8/22 recovery rate (36.4%)**.
-    - **Active Online:** Graph diagnosis + targeted prompt mutation achieved a **57/113 recovery rate (50.4%)**.
-    - *Insight:* The Reflector's primary function is not optimizing initial adjudication, but acting as a runtime epistemic control loop that intervenes once initial adjudication fails.
-  - **Token Economics:** Mean consumption was **16,822.1 tokens/seed** (pinned) vs. **17,260.1 tokens/seed** (online) — a direct difference of only **438 tokens/seed**. However, tokens per accepted row were higher for pinned (**23,364 vs. 21,571 tokens/row**), demonstrating the core tradeoff: *adaptation costs modest tokens per seed, but lack of adaptation costs accepted ground-truth rows*.
-  - **Invariant Integrity:** 0 accepted logic errors (INV-1 = 0.0000, 36/36 rows clean), 100% anchor grounding. Full report: [`reports/debate_benchmark_50_seed_pinned_pareto.md`](../reports/debate_benchmark_50_seed_pinned_pareto.md).
+- **Empirical Findings (5 Replicates, $N=249$ Canonical Episodes):**
+  - **Overall Yield:** **75.1% ± 4.8% (187/249)** — compared with **80.4% ± 5.5% (201/250)** under Active Online (Regime 2) and **78.4% ± 5.2% (196/250)** under Stationary Baseline (Regime 1).
+  - **Round 0 Equivalence (60.2% vs. 57.6%):** Initial pass yields are comparable between pinned (60.2%, 150/249) and online (57.6%, 144/250), both trailing the cold baseline (72.0%, 180/250). The data is consistent with an association between complex domain directives and lower first-pass anchor compliance.
+  - **Post-Failure Protocol Gap:** 
+    - **Pinned:** Retrying with the *identical frozen warm prompt* achieved a **37.4% recovery rate (37/99)**.
+    - **Active Online:** Graph diagnosis + targeted prompt mutation achieved a **50.4% recovery rate (57/113)**, representing an observed +13.0 pp protocol-level difference.
+    - *Insight:* Frozen prompt knowledge alone does not reproduce the elevated recovery rates observed under active online reflection.
+  - **Token Economics:** Mean benchmark consumption was **823,793 ± 26,160 tokens/run** (16,542 tokens/seed). Tokens per accepted row were **22,127.6 ± 1,996.2** (macro-mean) / **22,026.6** (pooled aggregate), compared to **21,571.0** (Active Online) and **20,316.3** (Baseline).
+  - **Invariant Integrity:** 0 accepted logic errors across all 187 accepted rows (INV-1 = 0.0000, 100% clean). The 669-mutation Pareto ledger remained 100% immutable (SHA256 verified). Full report: [`reports/debate_benchmark_50_seed_pinned_pareto.md`](../reports/debate_benchmark_50_seed_pinned_pareto.md).
 
 ---
 
@@ -125,6 +125,11 @@ Rather than pursuing ad-hoc prompt variations, Chapter 2 is formalized as a syst
 | **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep4` | 2026-09-21 | 45 | GEPA Live (Sliced) | 90.0% | 45/50 | 18,526 | 0/45 (0.0%) |
 | **Regime 2 ($N=50$)** | `unrun-sliced-pareto-50-rep5` | 2026-09-21 | 46 | GEPA Live (Sliced) | 78.0% | 39/50 | 22,586 | 0/39 (0.0%) |
 | **Regime 3 (Angle 3)** | `unrun-pinned-pareto-50-rep1` | 2026-09-21 | 42 | Terminal Pinned (v669) | 72.0% | 36/50 | 23,364 | 0/36 (0.0%) |
+| **Regime 3 (Angle 3)** | `unrun-pinned-pareto-50-rep2` | 2026-09-22 | 43 | Terminal Pinned (v669) | 80.0% | 40/50 | 20,107 | 0/40 (0.0%) |
+| **Regime 3 (Angle 3)** | `unrun-pinned-pareto-50-rep3` | 2026-09-22 | 44 | Terminal Pinned (v669) | 70.0% | 35/50 | 23,603 | 0/35 (0.0%) |
+| **Regime 3 (Angle 3)** | `unrun-pinned-pareto-50-rep4` | 2026-09-22 | 45 | Terminal Pinned (v669) | 73.5% | 36/49 | 23,772 | 0/36 (0.0%) |
+| **Regime 3 (Angle 3)** | `unrun-pinned-pareto-50-rep5` | 2026-09-22 | 46 | Terminal Pinned (v669) | 80.0% | 40/50 | 19,793 | 0/40 (0.0%) |
+| **Regime 3 Mean (N=5)** | `unrun-pinned-pareto-50-rep1..5` | 2026-09-22 | 42..46 | Terminal Pinned (v669) | **75.1% ± 4.8%** | **187/249** | **22,128** | **0/187 (0.0%)** |
 
 ---
 
@@ -163,7 +168,7 @@ To cleanly separate **prior quality**, **accumulated knowledge**, and **runtime 
 
 1. **Condition A: Cold Baseline (`baseline_v0`)** — High Round-0 compliance (72.0%), low failure recovery (22.9%), no prior specialization.
 2. **Condition B: Frozen Initial Warm (`v355`)** — Isolates starting prior quality without subsequent accumulation.
-3. **Condition C: Frozen Terminal Warm (`v669`)** — Evaluates whether 669 accumulated mutations can replace live adaptation. (Result: 72.0% yield, 36.4% recovery).
+3. **Condition C: Frozen Terminal Warm (`v669`)** — Evaluates whether 669 accumulated mutations can replace live adaptation. (Result: 75.1% ± 4.8% yield, 37.4% recovery across 5 replicates, N=249).
 4. **Condition D: Active Dynamic Adaptation (`v355 → mutation`)** — Full runtime adaptation: 80.4% yield, 50.4% recovery.
 
 ### B. Chapter 2: Structural Grounding Interventions (Next)
