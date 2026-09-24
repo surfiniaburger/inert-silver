@@ -8,6 +8,7 @@ import os
 import re
 import hashlib
 from dataclasses import dataclass
+import inspect
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -679,6 +680,8 @@ def _checkpoint_controls(
     predicate: str,
     target_verdict: str,
     target_dimension: str,
+    pin_pareto: bool = False,
+    escalate_pareto: bool = False,
 ) -> dict:
     return {
         "run_id": replay_manager.run_record.run_id,
@@ -690,6 +693,8 @@ def _checkpoint_controls(
         "predicate": predicate,
         "target_verdict": target_verdict,
         "target_dimension": target_dimension,
+        "pin_pareto": bool(pin_pareto),
+        "escalate_pareto": bool(escalate_pareto),
     }
 
 
@@ -781,6 +786,8 @@ class _EvalContext:
         self.attempts_path = req.config.get("attempts_path", f"artifacts/attempts/{self.run_id}.jsonl")
         self.checkpoint_path = req.config.get("checkpoint_path", f"artifacts/checkpoints/{self.run_id}/{self.seed}.json")
         self.resume = _truthy(req.config.get("resume", False))
+        self.pin_pareto = _truthy(req.config.get("pin_pareto", False))
+        self.escalate_pareto = _truthy(req.config.get("escalate_pareto", False))
 
         self.current_input_block = req.config.get("topic", "")
         self.controls = _checkpoint_controls(
@@ -790,6 +797,8 @@ class _EvalContext:
             predicate=self.predicate,
             target_verdict=self.target_verdict,
             target_dimension=self.target_dimension,
+            pin_pareto=self.pin_pareto,
+            escalate_pareto=self.escalate_pareto,
         )
         self.resume_checkpoint = None
         if self.resume:
@@ -811,13 +820,17 @@ class _EvalContext:
         self.reflector_prompt = req.config.get("reflector_prompt", "")
         self.reflector_mode = str(req.config.get("reflector_mode", "symmetric")).lower()
         self.active_mutation_id = req.config.get("active_mutation_id", "baseline_v0")
+        if self.resume_checkpoint:
+            if "reflector_prompt" in self.resume_checkpoint:
+                self.reflector_prompt = str(self.resume_checkpoint["reflector_prompt"])
+            if "active_mutation_id" in self.resume_checkpoint:
+                self.active_mutation_id = str(self.resume_checkpoint["active_mutation_id"])
         self.taxonomy_bucket = req.config.get("taxonomy_bucket", "input_validation")
         self.gepa_dir = req.config.get("gepa_dir", "artifacts/gepa")
         self.last_sample_block = self.current_input_block
         self.reflector_in_process = _truthy(req.config.get("reflector_in_process", True))
         self.reflector_url = str(req.config.get("reflector_url", "http://127.0.0.1:8004"))
         self.slice_judge = _truthy(req.config.get("slice_judge", True))
-        self.pin_pareto = _truthy(req.config.get("pin_pareto", False))
         self.reflector_client: Optional[ReflectorClient] = None
         if not self.pin_pareto and _truthy(req.config.get("reflector", False)):
             try:
@@ -837,6 +850,8 @@ class _EvalContext:
             "phase": phase,
             "refinement_round": refinement_round,
             "current_input_block": self.current_input_block,
+            "reflector_prompt": self.reflector_prompt,
+            "active_mutation_id": self.active_mutation_id,
             **state,
         }
         save_checkpoint(self.checkpoint_path, payload, clock_now=self.replay_manager.run_record.created_at)
@@ -846,6 +861,8 @@ class _EvalContext:
         enriched.setdefault("active_mutation_id", self.active_mutation_id)
         if getattr(self, "pin_pareto", False):
             enriched.setdefault("pin_pareto", True)
+        if getattr(self, "escalate_pareto", False):
+            enriched.setdefault("escalate_pareto", True)
         enriched.setdefault(
             "metadata",
             _run_metadata(
@@ -979,6 +996,132 @@ class _ReflectorDiagnosticInput:
     judge_rationale: str
 
 
+async def _generate_or_refine_sample(
+    generator: Any,
+    ctx: _EvalContext,
+    i: int,
+    previous_sample_block: str,
+    last_judge_reason: str,
+    updater: TaskUpdater,
+) -> dict:
+    if i == 0:
+        await updater.update_status(TaskState.working, new_agent_text_message("Generating initial boundary sample..."))
+        reflector_prompt = "" if getattr(ctx, "escalate_pareto", False) else ctx.reflector_prompt
+        return await generator.generate_boundary_sample(
+            ctx.current_input_block,
+            ctx.predicate,
+            ctx.target_dimension,
+            ctx.target_verdict,
+            reflector_prompt=reflector_prompt,
+        )
+    await updater.update_status(TaskState.working, new_agent_text_message("Refining sample based on judge feedback..."))
+    return await generator.refine_sample(
+        ctx.current_input_block,
+        ctx.predicate,
+        ctx.target_dimension,
+        ctx.target_verdict,
+        previous_sample_block,
+        last_judge_reason,
+        reflector_prompt=ctx.reflector_prompt,
+    )
+
+
+def _resolve_sample_block(revised: Any, default_block: str, seed: Any) -> str:
+    if isinstance(revised, str) and _is_code_like(revised):
+        return revised
+    if revised:
+        logger.warning(
+            "Generated sample for seed %s is not code-like; falling back to original input code.",
+            seed,
+        )
+    return default_block
+
+
+def _get_cached_escalation(
+    ctx: _EvalContext, pseudo_model: str, messages: list, pseudo_params: dict
+) -> tuple[str, str] | None:
+    replay_mgr = getattr(ctx, "replay_manager", None)
+    cassette = getattr(replay_mgr, "cassette", None) if replay_mgr else None
+    if ctx.mode == "replay" and getattr(cassette, "mode", None) == "replay":
+        cached = cassette.get_response(pseudo_model, messages, pseudo_params)
+        if isinstance(cached, dict) and "prompt" in cached:
+            return cached["prompt"], cached.get("variant_id", "baseline_v0")
+        raise OfflineReplayError(
+            f"Offline Replay Error: No cached escalation prompt for model={pseudo_model} params={pseudo_params}"
+        )
+    return None
+
+
+def _save_cached_escalation(
+    ctx: _EvalContext, pseudo_model: str, messages: list, pseudo_params: dict, prompt: str, variant: str
+) -> None:
+    replay_mgr = getattr(ctx, "replay_manager", None)
+    cassette = getattr(replay_mgr, "cassette", None) if replay_mgr else None
+    if cassette and getattr(cassette, "mode", None) == "record":
+        cassette.save_response(
+            pseudo_model,
+            messages,
+            pseudo_params,
+            {"prompt": prompt, "variant_id": variant},
+        )
+
+
+async def _fetch_client_pareto_entry(client: Any, taxonomy: str) -> tuple[str, str]:
+    if not client:
+        return "", "baseline_v0"
+    try:
+        if hasattr(client, "get_pareto_entry"):
+            res = client.get_pareto_entry(taxonomy)
+            entry = await res if inspect.isawaitable(res) else res
+            return str(entry[0]), str(entry[1])
+        if hasattr(client, "registry") and hasattr(client.registry, "get_pareto_entry"):
+            entry = client.registry.get_pareto_entry(taxonomy)
+            return str(entry[0]), str(entry[1])
+
+        if hasattr(client, "get_pareto_prompt"):
+            res = client.get_pareto_prompt(taxonomy)
+            prompt = await res if inspect.isawaitable(res) else res
+        else:
+            prompt = client.registry.get_pareto_prompt(taxonomy)
+
+        if hasattr(client, "get_pareto_variant_id"):
+            res_v = client.get_pareto_variant_id(taxonomy)
+            variant = await res_v if inspect.isawaitable(res_v) else res_v
+        else:
+            variant = client.registry.get_pareto_variant_id(taxonomy)
+        return str(prompt), str(variant)
+    except Exception as e:
+        logger.warning("Could not fetch warm Pareto prompt for escalation: %s", e)
+        return get_static_baseline_prompt(taxonomy), "baseline_v0"
+
+
+async def _resolve_escalated_pareto_base(
+    ctx: _EvalContext,
+    attempt_index: int,
+) -> tuple[str, str]:
+    """Retrieve or restore warm Pareto prompt and variant ID for progressive escalation.
+
+    Uses replay cassette when available to preserve deterministic replay lookup keys.
+    Supports both in-process and remote ReflectorClient modes.
+    """
+    pseudo_model = "escalate_pareto_warm_prompt"
+    pseudo_params = {"seed_id": str(ctx.seed), "attempt_index": attempt_index}
+    messages = [{"role": "system", "content": ctx.taxonomy_bucket}]
+
+    cached = _get_cached_escalation(ctx, pseudo_model, messages, pseudo_params)
+    if cached is not None:
+        return cached
+
+    base_prompt, variant_id = await _fetch_client_pareto_entry(
+        getattr(ctx, "reflector_client", None), ctx.taxonomy_bucket
+    )
+    if not base_prompt:
+        base_prompt = getattr(ctx, "reflector_prompt", "") or get_static_baseline_prompt(ctx.taxonomy_bucket)
+
+    _save_cached_escalation(ctx, pseudo_model, messages, pseudo_params, base_prompt, variant_id)
+    return base_prompt, variant_id
+
+
 class DebateJudgeADK(GreenAgent):
     def __init__(self, model: str = DEFAULT_JUDGE_MODEL):
         self.model = model
@@ -1095,7 +1238,6 @@ class DebateJudgeADK(GreenAgent):
             return False, f"Can't parse num_rounds: {e}"
         return True, "ok"
 
-
     async def _get_sample_data(
         self,
         ctx: _EvalContext,
@@ -1113,47 +1255,27 @@ class DebateJudgeADK(GreenAgent):
                 "current_sample_block",
                 previous_sample_block,
             )
-        else:
-            if i == 0:
-                await updater.update_status(TaskState.working, new_agent_text_message("Generating initial boundary sample..."))
-                sample_data = await self.generator.generate_boundary_sample(
-                    ctx.current_input_block,
-                    ctx.predicate,
-                    ctx.target_dimension,
-                    ctx.target_verdict,
-                    reflector_prompt=ctx.reflector_prompt,
-                )
-            else:
-                await updater.update_status(TaskState.working, new_agent_text_message("Refining sample based on judge feedback..."))
-                sample_data = await self.generator.refine_sample(
-                    ctx.current_input_block,
-                    ctx.predicate,
-                    ctx.target_dimension,
-                    ctx.target_verdict,
-                    previous_sample_block,
-                    last_judge_reason,
-                    reflector_prompt=ctx.reflector_prompt,
-                )
+            if "reflector_prompt" in active_checkpoint:
+                ctx.reflector_prompt = active_checkpoint["reflector_prompt"]
+            if "active_mutation_id" in active_checkpoint:
+                ctx.active_mutation_id = active_checkpoint["active_mutation_id"]
+            return sample_data, current_sample_block
 
-            revised = sample_data.get("revised_input_block")
-            if revised and isinstance(revised, str) and _is_code_like(revised):
-                current_sample_block = revised
-            else:
-                if revised and not _is_code_like(revised):
-                    logger.warning(
-                        "Generated sample for seed %s is not code-like; falling back to original input code.",
-                        ctx.seed,
-                    )
-                current_sample_block = ctx.current_input_block
-            ctx.last_sample_data = sample_data
-            ctx.write_checkpoint(
-                "generated_sample",
-                i,
-                sample_data=sample_data,
-                current_sample_block=current_sample_block,
-                current_sample_block_sha256=_sha256_text(current_sample_block),
-                last_judge_reason=last_judge_reason,
-            )
+        sample_data = await _generate_or_refine_sample(
+            self.generator, ctx, i, previous_sample_block, last_judge_reason, updater
+        )
+        current_sample_block = _resolve_sample_block(
+            sample_data.get("revised_input_block"), ctx.current_input_block, ctx.seed
+        )
+        ctx.last_sample_data = sample_data
+        ctx.write_checkpoint(
+            "generated_sample",
+            i,
+            sample_data=sample_data,
+            current_sample_block=current_sample_block,
+            current_sample_block_sha256=_sha256_text(current_sample_block),
+            last_judge_reason=last_judge_reason,
+        )
         return sample_data, current_sample_block
 
     async def _get_debate_transcript(
@@ -1180,7 +1302,7 @@ class DebateJudgeADK(GreenAgent):
         pro_mission = f"PRO MISSION: Prove that the predicate '{ctx.predicate}' is {ctx.target_verdict} for the given code.\n{anchor_directive_pro}"
         con_mission = f"CON MISSION: Prove that the predicate '{ctx.predicate}' is {opposite_verdict} (i.e., disprove the target verdict).\n{anchor_directive_con}"
 
-        if ctx.reflector_prompt:
+        if ctx.reflector_prompt and not (getattr(ctx, "escalate_pareto", False) and i == 0):
             if ctx.reflector_mode in ("pro_only", "symmetric"):
                 pro_mission = f"{ctx.reflector_prompt}\n\n{pro_mission}"
             if ctx.reflector_mode in ("con_only", "symmetric"):
@@ -1967,6 +2089,14 @@ Never return fewer than 2 verbatim anchors in 'anchors'.
                 predicate_family=ctx.predicate,
             )
 
+            base_prompt = ctx.reflector_prompt
+            if getattr(ctx, "escalate_pareto", False) and getattr(ctx, "reflector_client", None) and (i == 0 or not base_prompt):
+                base_prompt, escalated_variant = await _resolve_escalated_pareto_base(ctx, i + 1)
+                ctx.active_mutation_id = escalated_variant
+                ctx.reflector_prompt = base_prompt
+
+            current_prompt = base_prompt or get_static_baseline_prompt(ctx.taxonomy_bucket)
+
             reflect_req = ReflectRequest(
                 attempt_index=i + 1,
                 scenario_id=str(ctx.seed),
@@ -1974,7 +2104,7 @@ Never return fewer than 2 verbatim anchors in 'anchors'.
                 taxonomy_bucket=ctx.taxonomy_bucket,
                 code_text=sample_block,
                 graph_diagnostic=diag,
-                current_system_prompt=ctx.reflector_prompt or get_static_baseline_prompt(ctx.taxonomy_bucket),
+                current_system_prompt=current_prompt,
             )
 
             reflect_resp = await self._fetch_reflector_response(ctx, i, reflect_req)
@@ -1992,6 +2122,9 @@ Never return fewer than 2 verbatim anchors in 'anchors'.
                         f"GEPA Reflector applied mutation: {reflect_resp.mutation_rationale}"
                     ),
                 )
+            elif getattr(ctx, "escalate_pareto", False) and not ctx.reflector_prompt:
+                ctx.reflector_prompt = base_prompt
+                logger.info("Progressive Escalation: using unmutated warm Pareto prompt for Round %d", i + 2)
         except ReplayError:
             raise
         except Exception as exc:
@@ -2017,6 +2150,8 @@ Never return fewer than 2 verbatim anchors in 'anchors'.
                 )
                 if accepted:
                     return
+                if ctx.resume_checkpoint and int(ctx.resume_checkpoint.get("refinement_round", -1)) > i:
+                    continue
                 await self._try_mutate_reflector_prompt(ctx, i, last_judge_reason, updater)
 
             # Failure path after max refinements

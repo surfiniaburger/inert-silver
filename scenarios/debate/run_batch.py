@@ -134,7 +134,16 @@ def _parse_args(cmd_args: list[str] | None = None) -> argparse.Namespace:
         default=False,
         help="Pin warm Pareto prompts from --gepa-dir without live reflection or prompt mutations.",
     )
-    return parser.parse_args(cmd_args)
+    parser.add_argument(
+        "--escalate-pareto",
+        action="store_true",
+        default=False,
+        help="Progressive escalation: start Round 0 with clean baseline prompt; escalate to warm Pareto + Reflector on Round 1.",
+    )
+    args = parser.parse_args(cmd_args)
+    if getattr(args, "pin_pareto", False) and getattr(args, "escalate_pareto", False):
+        parser.error("Cannot specify both --pin-pareto and --escalate-pareto.")
+    return args
 
 
 def resolve_target_verdict(seed: dict) -> str:
@@ -183,7 +192,10 @@ def _build_payload(
     elif pareto_registry is not None:
         registry = pareto_registry
 
-    if registry is not None:
+    if getattr(args, "escalate_pareto", False):
+        pareto_prompt = ""
+        active_mutation_id = "baseline_v0"
+    elif registry is not None:
         try:
             pareto_prompt = registry.get_pareto_prompt(taxonomy)
             active_mutation_id = registry.get_pareto_variant_id(taxonomy)
@@ -194,6 +206,12 @@ def _build_payload(
         pareto_prompt = get_static_baseline_prompt(taxonomy)
 
     target_verdict = resolve_target_verdict(seed)
+
+    reflector_enabled = getattr(args, "reflector", True)
+    if getattr(args, "pin_pareto", False):
+        reflector_enabled = False
+    elif getattr(args, "escalate_pareto", False):
+        reflector_enabled = True
 
     return {
         "participants": {
@@ -229,7 +247,8 @@ def _build_payload(
             "active_mutation_id": active_mutation_id,
             "gepa_dir": getattr(args, "gepa_dir", "artifacts/gepa"),
             "pin_pareto": getattr(args, "pin_pareto", False),
-            "reflector": False if getattr(args, "pin_pareto", False) else getattr(args, "reflector", True),
+            "escalate_pareto": getattr(args, "escalate_pareto", False),
+            "reflector": reflector_enabled,
             "reflector_in_process": getattr(args, "reflector_in_process", True),
             "reflector_url": getattr(args, "reflector_url", "http://127.0.0.1:8004"),
             "slice_judge": getattr(args, "slice_judge", True),
@@ -442,7 +461,7 @@ async def _process_seed(
 
 
 def _init_gepa_components(args: argparse.Namespace) -> tuple[Optional[ParetoRegistry], Optional[ReflectorClient]]:
-    if not args.reflector and not getattr(args, "pin_pareto", False):
+    if not args.reflector and not getattr(args, "pin_pareto", False) and not getattr(args, "escalate_pareto", False):
         return None, None
     gepa_path = Path(args.gepa_dir)
     pareto_registry = ParetoRegistry(gepa_dir=gepa_path)
@@ -454,7 +473,10 @@ def _init_gepa_components(args: argparse.Namespace) -> tuple[Optional[ParetoRegi
         base_url=args.reflector_url,
         in_process=args.reflector_in_process,
     )
-    print(f"GEPA Graph-Powered Reflector enabled (in_process={args.reflector_in_process}, gepa_dir='{args.gepa_dir}').")
+    if getattr(args, "escalate_pareto", False):
+        print(f"GEPA Progressive Escalation enabled: Cold R0 -> Warm Adaptive Pareto R1 from '{args.gepa_dir}'.")
+    else:
+        print(f"GEPA Graph-Powered Reflector enabled (in_process={args.reflector_in_process}, gepa_dir='{args.gepa_dir}').")
     return pareto_registry, reflector_client
 
 

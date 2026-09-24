@@ -17,7 +17,8 @@ We define two distinct historical epochs:
   - **Core Regimes Evaluated:**
     1. *Regime 1: Stationary AST Slicing Baseline* ($78.4\% \pm 5.2\%$ yield, 5 replicates, $N=250$).
     2. *Regime 2: Active Online Learning* (AST Slicing + Live Reflector Agent + Dynamic Pareto mutation library, 5 replicates, $N=250$).
-    3. *Regime 3: Warm Pinned Pareto* (AST Slicing + Static Pareto library without live mutations).
+    3. *Regime 3: Warm Pinned Pareto* (AST Slicing + Static Pareto library without live mutations, 5 replicates, $N=249$).
+    4. *Regime 4: Progressive Escalation / Angle 4* (Cold Round 0 Baseline $\to$ Adaptive Warm Pareto Round 1 live Reflector on failure, 5 replicates, $N=250$: **$85.20\% \pm 2.28\%$ yield**, **$60.22\%$ recovery**, **18,410.9 tokens/row**, 0 accepted logic errors).
   - **Principle:** Under Chapter 1, debater system prompts and anchor rules are strictly kept invariant to ensure that all differences across runs reflect pure algorithmic mechanisms (slicing, reflection, Pareto mutation), not ad-hoc prompt tweaking.
 
 - **Chapter 2: Targeted Grounding & Structural Formatting Shields**
@@ -110,6 +111,16 @@ Rather than pursuing ad-hoc prompt variations, Chapter 2 is formalized as a syst
   - **Token Economics:** Mean benchmark consumption was **823,793 ± 26,160 tokens/run** (16,542 tokens/seed). Tokens per accepted row were **22,127.6 ± 1,996.2** (macro-mean) / **22,026.6** (pooled aggregate), compared to **21,571.0** (Active Online) and **20,316.3** (Baseline).
   - **Invariant Integrity:** 0 accepted logic errors across all 187 accepted rows (INV-1 = 0.0000, 100% clean). The 669-mutation Pareto ledger remained 100% immutable (SHA256 verified). Full report: [`reports/debate_benchmark_50_seed_pinned_pareto.md`](../reports/debate_benchmark_50_seed_pinned_pareto.md).
 
+### Angle 4: Progressive Escalation (`--escalate-pareto`, Cognitive Decoupling)
+- **Question:** *Can we capture both the high first-pass compliance of cold prompts and the elevated failure recovery of warm reflection by decoupling execution rounds?*
+- **Mechanism:** Debaters execute Round 0 using the cold `baseline_v0` prompt (empty reflector prompt). If and only if an episode fails verification, the Judge dynamically escalates the retry to Round 1: loading the warm Pareto champion as base prompt, extracting AST/CFG failure node diagnostics, and mutating the prompt with the live GEPA Reflector.
+- **Empirical Findings (5 Replicates, $N=250$ Canonical Episodes):**
+  - **Overall Yield:** **85.20% ± 2.28% (213/250)** — establishing a new benchmark record (+6.8 pp over Sliced Baseline, +10.1 pp over Pinned Pareto).
+  - **Round 0 Pass Rate (62.8%):** Initial pass yields averaged 62.8% (157/250), reaching up to 74.0% in Rep 4, avoiding prompt bloat and instruction competition.
+  - **Round 1 Post-Failure Recovery (60.22%):** Live AST/CFG mutation from the warm Pareto prior recovered **56 out of 93 failures (60.22%)**, dwarfing static baseline retries (22.9%) and frozen Pareto retries (37.4%).
+  - **Compute Economics:** Lowest token cost across all evaluated regimes at **18,410.9 ± 1,914.6 tokens / accepted row** (~10% cheaper than Baseline, ~17% cheaper than Pinned Pareto).
+  - **Invariant Integrity:** 0 accepted logic errors across all 213 accepted rows (INV-1 = 0.0000, 100% clean). Full report: [`reports/debate_benchmark_50_seed_progressive_escalation.md`](../reports/debate_benchmark_50_seed_progressive_escalation.md).
+
 ---
 
 ## 5. Current Experimental Lineage Tracker
@@ -130,12 +141,18 @@ Rather than pursuing ad-hoc prompt variations, Chapter 2 is formalized as a syst
 | **Regime 3 (Angle 3)** | `unrun-pinned-pareto-50-rep4` | 2026-09-22 | 45 | Terminal Pinned (v669) | 73.5% | 36/49 | 23,772 | 0/36 (0.0%) |
 | **Regime 3 (Angle 3)** | `unrun-pinned-pareto-50-rep5` | 2026-09-22 | 46 | Terminal Pinned (v669) | 80.0% | 40/50 | 19,793 | 0/40 (0.0%) |
 | **Regime 3 Mean (N=5)** | `unrun-pinned-pareto-50-rep1..5` | 2026-09-22 | 42..46 | Terminal Pinned (v669) | **75.1% ± 4.8%** | **187/249** | **22,128** | **0/187 (0.0%)** |
+| **Regime 4 (Angle 4)** | `unrun-escalate-pareto-50-rep1` | 2026-09-23 | 42 | Cold R0 $\to$ Warm Adaptive R1 | 86.0% | 43/50 | 19,523 | 0/43 (0.0%) |
+| **Regime 4 (Angle 4)** | `unrun-escalate-pareto-50-rep2` | 2026-09-23 | 43 | Cold R0 $\to$ Warm Adaptive R1 | 88.0% | 44/50 | 17,273 | 0/44 (0.0%) |
+| **Regime 4 (Angle 4)** | `unrun-escalate-pareto-50-rep3` | 2026-09-23 | 44 | Cold R0 $\to$ Warm Adaptive R1 | 82.0% | 41/50 | 20,809 | 0/41 (0.0%) |
+| **Regime 4 (Angle 4)** | `unrun-escalate-pareto-50-rep4` | 2026-09-24 | 45 | Cold R0 $\to$ Warm Adaptive R1 | 86.0% | 43/50 | 15,889 | 0/43 (0.0%) |
+| **Regime 4 (Angle 4)** | `unrun-escalate-pareto-50-rep5` | 2026-09-24 | 46 | Cold R0 $\to$ Warm Adaptive R1 | 84.0% | 42/50 | 18,560 | 0/42 (0.0%) |
+| **Regime 4 Mean (N=5)** | `unrun-escalate-pareto-50-rep1..5` | 2026-09-24 | 42..46 | Cold R0 $\to$ Warm Adaptive R1 | **85.20% ± 2.28%** | **213/250** | **18,411** | **0/213 (0.0%)** |
 
 ---
 
 ## 6. Controlled Decomposition Matrix & Chapter 2 Roadmap
 
-### A. The 4-Condition Clean Decomposition
+### A. The 5-Condition Clean Decomposition
 To cleanly separate **prior quality**, **accumulated knowledge**, and **runtime adaptation**, the controlled evaluation space is formalized as:
 
 ```text
@@ -170,9 +187,10 @@ To cleanly separate **prior quality**, **accumulated knowledge**, and **runtime 
 2. **Condition B: Frozen Initial Warm (`v355`)** — Isolates starting prior quality without subsequent accumulation.
 3. **Condition C: Frozen Terminal Warm (`v669`)** — Evaluates whether 669 accumulated mutations can replace live adaptation. (Result: 75.1% ± 4.8% yield, 37.4% recovery across 5 replicates, N=249).
 4. **Condition D: Active Dynamic Adaptation (`v355 → mutation`)** — Full runtime adaptation: 80.4% yield, 50.4% recovery.
+5. **Condition E: Progressive Escalation / Angle 4 (`baseline_v0 R0 → warm v669 mutation R1`)** — Tests the Cognitive Decoupling Hypothesis. (Result: **85.20% ± 2.28% net yield**, **60.22% failure recovery (56/93)**, **18,410.9 tokens/row** across 5 replicates, $N=250$).
 
 ### B. Chapter 2: Structural Grounding Interventions (Next)
-With Angle 3 having established that the warm prior induces Round-0 compliance drops that online mutation subsequently repairs, Chapter 2 directly targets the root cause:
+With Angle 3 having established that the warm prior induces Round-0 compliance drops that online mutation subsequently repairs, and Angle 4 proving that progressive escalation decouples cold triage from deep repair, Chapter 2 directly targets the root cause:
 - **Angle 1: Formatting Shield (Output Contract Enforcement):** Enforce immutable anchor-first block syntax to prevent Instruction Competition from dropping Round 0 anchors.
 - **Angle 2: Targeted Syntactic Grounding:** Pass candidate AST lines directly to debaters to guide search.
-- **Target Benchmark:** Evaluate Angle 1 + Angle 3 to determine whether the Formatting Shield recovers the 16% Round 0 yield drop without paying the Refinement Tax.
+- **Target Benchmark:** Evaluate Angle 1 + Angle 4 to determine whether the Formatting Shield recovers the initial Round 0 pass rate from 62.8% to >75%, potentially pushing net yield above **92%**.

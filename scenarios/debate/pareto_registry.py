@@ -171,31 +171,37 @@ class ParetoRegistry:
 
     # ── Pareto Frontier Operations ─────────────────────────────────────────
 
-    def get_pareto_prompt(self, taxonomy: TaxonomyBucket) -> str:
+    def get_pareto_entry(self, taxonomy: TaxonomyBucket) -> tuple[str, str]:
         """
-        Retrieve the current best Pareto-optimal system prompt for the given taxonomy bucket.
+        Atomically retrieve the current best (prompt, variant_id) for the given taxonomy bucket.
         Falls back to the static specialist baseline prompt if no variant is registered.
         """
         with self._lock():
             frontier = self._load_json_unlocked(self.frontier_path, {})
             bucket_data = frontier.get(taxonomy)
-            if bucket_data and isinstance(bucket_data, dict) and bucket_data.get("prompt"):
-                return str(bucket_data["prompt"])
+            if bucket_data and isinstance(bucket_data, dict):
+                prompt = str(bucket_data.get("prompt", ""))
+                variant_id = str(bucket_data.get("variant_id", "baseline_v0"))
+                if prompt:
+                    return prompt, variant_id
 
-        # Fallback to static baseline specialist prompt per Spec §3.4
         try:
-            return get_static_baseline_prompt(taxonomy)
+            return get_static_baseline_prompt(taxonomy), "baseline_v0"
         except KeyError:
-            return ""
+            return "", "baseline_v0"
+
+    def get_pareto_prompt(self, taxonomy: TaxonomyBucket) -> str:
+        """
+        Retrieve the current best Pareto-optimal system prompt for the given taxonomy bucket.
+        Falls back to the static specialist baseline prompt if no variant is registered.
+        """
+        prompt, _ = self.get_pareto_entry(taxonomy)
+        return prompt
 
     def get_pareto_variant_id(self, taxonomy: TaxonomyBucket) -> str:
         """Return the active variant ID for the given taxonomy bucket (or 'baseline_v0')."""
-        with self._lock():
-            frontier = self._load_json_unlocked(self.frontier_path, {})
-            bucket_data = frontier.get(taxonomy)
-            if bucket_data and isinstance(bucket_data, dict) and bucket_data.get("variant_id"):
-                return str(bucket_data["variant_id"])
-        return "baseline_v0"
+        _, variant_id = self.get_pareto_entry(taxonomy)
+        return variant_id
 
     def register_pareto_prompt(
         self,
