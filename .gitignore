@@ -44,3 +44,4 @@ tasks/
 barred-fleet/
 #Ignore vscode AI rules
 .github/instructions/codacy.instructions.md
+videos
