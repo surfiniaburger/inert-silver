@@ -100,7 +100,7 @@ def test_build_payload_with_active_pareto_prompt(temp_gepa_dir):
     )
     client = ReflectorClient(registry=registry, in_process=True)
 
-    args = _parse_args([])
+    args = _parse_args(["--no-escalate-pareto"])
     seed = {
         "topic": "int x = a + b;",
         "predicate": "integer_overflow leading to wraparound",
@@ -444,10 +444,10 @@ async def test_judge_pin_pareto_bypasses_mutation_and_promotion(temp_gepa_dir):
 def test_parse_args_escalate_pareto():
     """Verify CLI parser correctly parses --escalate-pareto and rejects mutual exclusivity."""
     args = _parse_args([])
-    assert args.escalate_pareto is False
+    assert args.escalate_pareto is True
 
-    args_escalate = _parse_args(["--escalate-pareto"])
-    assert args_escalate.escalate_pareto is True
+    args_no_escalate = _parse_args(["--no-escalate-pareto"])
+    assert args_no_escalate.escalate_pareto is False
 
     # Mutually exclusive flags should raise SystemExit from parser.error
     with pytest.raises(SystemExit):

@@ -81,7 +81,7 @@ def _compute_seeds_sha256(seeds_path: str) -> str:
 
 def _parse_args(cmd_args: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="BARRED Batch Runner (Deterministic)")
-    parser.add_argument("--seeds", default="scenarios/debate/cve_seeds_50.jsonl")
+    parser.add_argument("--seeds", default="scenarios/debate/cve_seeds_benchmark_50.jsonl")
     parser.add_argument("--output", default="test_corpus_50.jsonl")
     parser.add_argument("--run-id", default="")
     parser.add_argument("--seed", type=int, default=42)
@@ -137,12 +137,23 @@ def _parse_args(cmd_args: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--escalate-pareto",
         action="store_true",
-        default=False,
+        default=True,
         help="Progressive escalation: start Round 0 with clean baseline prompt; escalate to warm Pareto + Reflector on Round 1.",
     )
+    parser.add_argument(
+        "--no-escalate-pareto",
+        dest="escalate_pareto",
+        action="store_false",
+        help="Disable progressive escalation (standard baseline).",
+    )
     args = parser.parse_args(cmd_args)
-    if getattr(args, "pin_pareto", False) and getattr(args, "escalate_pareto", False):
+    raw_args = sys.argv[1:] if cmd_args is None else cmd_args
+    explicit_pin = "--pin-pareto" in raw_args
+    explicit_escalate = "--escalate-pareto" in raw_args
+    if explicit_pin and explicit_escalate:
         parser.error("Cannot specify both --pin-pareto and --escalate-pareto.")
+    if explicit_pin:
+        args.escalate_pareto = False
     return args
 
 
@@ -192,7 +203,7 @@ def _build_payload(
     elif pareto_registry is not None:
         registry = pareto_registry
 
-    if getattr(args, "escalate_pareto", False):
+    if getattr(args, "escalate_pareto", False) and registry is not None:
         pareto_prompt = ""
         active_mutation_id = "baseline_v0"
     elif registry is not None:

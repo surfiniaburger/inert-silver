@@ -719,6 +719,7 @@ Before generating the final JSON output, you MUST think through the technical ar
 2. Evaluate the Pro side's attack vector: Is it technically feasible?
 3. Evaluate the Con side's defense: Is it an invariant guarantee?
 4. Reach a final verdict based on technical risk.
+CONSTRAINTS ON THINKING_PROCESS: Keep 'thinking_process' concise (maximum 150 words total, 1-2 tight sentences per step). Do NOT generate exhaustive disquisitions. You MUST reserve output capacity to complete all required JSON fields (scores, winner, mechanism, counterfactual, anchors).
 </thinking_process>
 
 <constraints>
@@ -1401,7 +1402,7 @@ Never return fewer than 2 verbatim anchors in 'anchors'.
                     ],
                     schema_name="debate_eval",
                     schema_model=DebateEval,
-                    strict=True,
+                    strict=False,
                     repair_on_fail=True,
                     repair_model=ctx.judge_model,
                     stage="judge_adjudication",
