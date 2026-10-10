@@ -12,6 +12,7 @@ All functions are pure (no I/O, no network, no filesystem).
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, FrozenSet, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
@@ -22,6 +23,8 @@ from scenarios.debate.graph_dataflow import (
     evaluate_epistemic_graph,
     is_sanitizer_valid_for_sink,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # §3.1  Closed-set taxonomy and failure-bucket type aliases
@@ -420,7 +423,7 @@ def _extract_epistemic_base_fields(graph_snapshot: FlowGraphSnapshot) -> Dict[st
                 directive_text=epistemic_res.curiosity_directive or "",
             )
     except Exception:
-        pass
+        logger.exception("Failed to extract epistemic graph fields")
     return fields
 
 

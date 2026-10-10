@@ -124,7 +124,7 @@ Perform a bit-level data-flow trace to confirm or debunk the claim.
                 ],
                 schema_name="verifier_report",
                 schema_model=VerifierReport,
-                strict=True,
+                strict=False,
                 repair_on_fail=True,
                 repair_model=verifier_model,
                 stage="verifier_audit",

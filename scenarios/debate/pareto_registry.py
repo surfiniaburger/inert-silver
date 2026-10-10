@@ -66,7 +66,11 @@ def gepa_lock(
         Open file descriptor of the acquired lock.
     """
     lock_file.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o666)
+    fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    except OSError:
+        pass
     start_time = time.monotonic()
     sleep_interval = initial_sleep
 
@@ -167,28 +171,37 @@ class ParetoRegistry:
 
     # ── Pareto Frontier Operations ─────────────────────────────────────────
 
-    def get_pareto_prompt(self, taxonomy: TaxonomyBucket) -> str:
+    def get_pareto_entry(self, taxonomy: TaxonomyBucket) -> tuple[str, str]:
         """
-        Retrieve the current best Pareto-optimal system prompt for the given taxonomy bucket.
+        Atomically retrieve the current best (prompt, variant_id) for the given taxonomy bucket.
         Falls back to the static specialist baseline prompt if no variant is registered.
         """
         with self._lock():
             frontier = self._load_json_unlocked(self.frontier_path, {})
             bucket_data = frontier.get(taxonomy)
-            if bucket_data and isinstance(bucket_data, dict) and bucket_data.get("prompt"):
-                return str(bucket_data["prompt"])
+            if bucket_data and isinstance(bucket_data, dict):
+                prompt = str(bucket_data.get("prompt", ""))
+                variant_id = str(bucket_data.get("variant_id", "baseline_v0"))
+                if prompt:
+                    return prompt, variant_id
 
-        # Fallback to static baseline specialist prompt per Spec §3.4
-        return get_static_baseline_prompt(taxonomy)
+        try:
+            return get_static_baseline_prompt(taxonomy), "baseline_v0"
+        except KeyError:
+            return "", "baseline_v0"
+
+    def get_pareto_prompt(self, taxonomy: TaxonomyBucket) -> str:
+        """
+        Retrieve the current best Pareto-optimal system prompt for the given taxonomy bucket.
+        Falls back to the static specialist baseline prompt if no variant is registered.
+        """
+        prompt, _ = self.get_pareto_entry(taxonomy)
+        return prompt
 
     def get_pareto_variant_id(self, taxonomy: TaxonomyBucket) -> str:
         """Return the active variant ID for the given taxonomy bucket (or 'baseline_v0')."""
-        with self._lock():
-            frontier = self._load_json_unlocked(self.frontier_path, {})
-            bucket_data = frontier.get(taxonomy)
-            if bucket_data and isinstance(bucket_data, dict) and bucket_data.get("variant_id"):
-                return str(bucket_data["variant_id"])
-        return "baseline_v0"
+        _, variant_id = self.get_pareto_entry(taxonomy)
+        return variant_id
 
     def register_pareto_prompt(
         self,
@@ -274,9 +287,12 @@ class ParetoRegistry:
         """Extract the most recent prompt from trace details, falling back to static baseline."""
         for t in reversed(var_traces):
             prompt = t.get("details", {}).get("prompt") or t.get("prompt")
-            if prompt:
-                return str(prompt)
-        return get_static_baseline_prompt(bucket)
+            if prompt and str(prompt).strip():
+                return str(prompt).strip()
+        try:
+            return get_static_baseline_prompt(bucket)
+        except KeyError:
+            return ""
 
     def _compute_bucket_frontier_entry(
         self,
@@ -291,9 +307,12 @@ class ParetoRegistry:
 
         var_id, last_trace, score = best
         var_traces = var_dict.get(var_id, [last_trace])
+        prompt = self._extract_prompt_from_traces(var_traces, bucket)
+        if not prompt or not prompt.strip():
+            return None
         return {
             "variant_id": var_id,
-            "prompt": self._extract_prompt_from_traces(var_traces, bucket),
+            "prompt": prompt,
             "score": round(score, 6),
             "updated_at": now_iso,
         }

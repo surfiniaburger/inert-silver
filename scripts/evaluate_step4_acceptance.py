@@ -35,9 +35,6 @@ if str(_SCENARIOS_DIR) not in sys.path:
 import numpy as np
 
 from scenarios.debate.pre_filter import partition_dataset_by_scenario_stratified
-from scripts.evaluate_graphify_cv import run_5fold_cv_for_extractor, EvaluationDataset
-from scripts.train_pre_filter import extract_dataset_from_attempts
-from scenarios.debate.graphify_flow_extractor import extract_graphify_flow_snapshot as graphify_extract
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("step4_acceptance")
@@ -127,6 +124,29 @@ def _compute_verifier_reliability(all_attempts: List[Dict[str, Any]]) -> float:
         return 0.0
     verifier_parse_oks = sum(1 for a in verifier_calls if a.get("verifier", {}).get("parse_ok", False))
     return verifier_parse_oks / len(verifier_calls)
+
+
+def _compute_counter_evidence_metrics(all_attempts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Keep intentional Con verifier skips out of generic verifier-failure metrics."""
+    receipts = [a.get("counter_evidence_validation") or {} for a in all_attempts]
+    status_counts = {status: sum(r.get("status") == status for r in receipts)
+                     for status in ("deterministically_confirmed", "defense_auditor_confirmed", "refuted", "inconclusive", "invalid_contract")}
+    accepted = [a for a in all_attempts if a.get("decision") == "accepted"]
+    validated_con = [a for a in accepted if a.get("acceptance_basis") == "validated_con_counter_evidence"]
+    intentional_skips = sum(
+        1 for a in validated_con
+        if not (a.get("verifier") or {}).get("called", False)
+    )
+    return {
+        "validated_con_accepts": len(validated_con),
+        "validated_con_accept_rate": len(validated_con) / max(len(accepted), 1),
+        "deterministic_con_confirmed": status_counts["deterministically_confirmed"],
+        "defense_auditor_confirmed": status_counts["defense_auditor_confirmed"],
+        "con_refuted": status_counts["refuted"],
+        "con_inconclusive": status_counts["inconclusive"],
+        "con_invalid_contract": status_counts["invalid_contract"],
+        "verifier_skipped_intentionally_for_validated_con": intentional_skips,
+    }
 
 
 def _compute_duplicate_suppression_rate(accepted_attempts: List[Dict[str, Any]]) -> Tuple[float, float]:
@@ -230,6 +250,7 @@ def audit_attempt_records(attempts_dir: Path) -> Dict[str, Any]:
         all_attempts, GEPA_RUN_PREFIXES, BASELINE_RUN_PREFIXES
     )
     ref_cand, ref_succ, ref_rate, triage_gain = _compute_refinement_metrics(all_attempts, GEPA_RUN_PREFIXES)
+    counter_evidence_metrics = _compute_counter_evidence_metrics(all_attempts)
 
     return {
         "total_attempts": len(all_attempts),
@@ -251,6 +272,7 @@ def audit_attempt_records(attempts_dir: Path) -> Dict[str, Any]:
         "mean_tokens_unadapted": round(mean_unadapted, 1),
         "mean_tokens_adapted": round(mean_adapted, 1),
         "token_reduction_pct": round(token_reduc_pct, 2),
+        **counter_evidence_metrics,
     }
 
 
@@ -290,6 +312,12 @@ def audit_leak_proof_partitions(dataset: EvaluationDataset, seeds: List[int]) ->
 
 
 def run_full_acceptance_audit() -> Dict[str, Any]:
+    # The full CV path needs optional ML and Tree-sitter dependencies. Keeping
+    # this import local leaves lightweight provenance audits usable without it.
+    from scripts.evaluate_graphify_cv import run_5fold_cv_for_extractor, EvaluationDataset
+    from scripts.train_pre_filter import extract_dataset_from_attempts
+    from scenarios.debate.graphify_flow_extractor import extract_graphify_flow_snapshot as graphify_extract
+
     attempts_dir = Path("artifacts/attempts")
     texts, labels, scenario_ids = extract_dataset_from_attempts(
         attempts_dir=attempts_dir,

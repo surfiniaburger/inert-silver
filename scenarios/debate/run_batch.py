@@ -81,7 +81,7 @@ def _compute_seeds_sha256(seeds_path: str) -> str:
 
 def _parse_args(cmd_args: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="BARRED Batch Runner (Deterministic)")
-    parser.add_argument("--seeds", default="scenarios/debate/cve_seeds_50.jsonl")
+    parser.add_argument("--seeds", default="scenarios/debate/cve_seeds_benchmark_50.jsonl")
     parser.add_argument("--output", default="test_corpus_50.jsonl")
     parser.add_argument("--run-id", default="")
     parser.add_argument("--seed", type=int, default=42)
@@ -104,7 +104,82 @@ def _parse_args(cmd_args: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-reflector-in-process", dest="reflector_in_process", action="store_false", help="Execute ReflectorClient over HTTP network.")
     parser.add_argument("--reflector-url", default="http://127.0.0.1:8004", help="Base URL for Reflector microservice.")
     parser.add_argument("--gepa-dir", default="artifacts/gepa", help="Directory for GEPA ledger, Pareto frontier, and traces.")
-    return parser.parse_args(cmd_args)
+    parser.add_argument(
+        "--reflector-mode",
+        choices=["symmetric", "pro_only", "con_only"],
+        default="symmetric",
+        help="Debater injection target for reflector prompt (symmetric, pro_only, con_only).",
+    )
+    parser.add_argument(
+        "--slice-judge",
+        action="store_true",
+        default=True,
+        help="Enable Tree-sitter AST Program Slicing for Judge input.",
+    )
+    parser.add_argument(
+        "--no-slice-judge",
+        dest="slice_judge",
+        action="store_false",
+        help="Disable Tree-sitter AST Program Slicing (use unpruned code).",
+    )
+    parser.add_argument(
+        "--counter-evidence-validation-mode",
+        choices=["off", "shadow", "enforce_deterministic"],
+        default="enforce_deterministic",
+        help="Con defense receipt rollout mode (default: enforce_deterministic).",
+    )
+    parser.add_argument(
+        "--pin-pareto",
+        action="store_true",
+        default=False,
+        help="Pin warm Pareto prompts from --gepa-dir without live reflection or prompt mutations.",
+    )
+    parser.add_argument(
+        "--escalate-pareto",
+        action="store_true",
+        default=True,
+        help="Progressive escalation: start Round 0 with clean baseline prompt; escalate to warm Pareto + Reflector on Round 1.",
+    )
+    parser.add_argument(
+        "--no-escalate-pareto",
+        dest="escalate_pareto",
+        action="store_false",
+        help="Disable progressive escalation (standard baseline).",
+    )
+    args = parser.parse_args(cmd_args)
+    raw_args = sys.argv[1:] if cmd_args is None else cmd_args
+    explicit_pin = "--pin-pareto" in raw_args
+    explicit_escalate = "--escalate-pareto" in raw_args
+    if explicit_pin and explicit_escalate:
+        parser.error("Cannot specify both --pin-pareto and --escalate-pareto.")
+    if explicit_pin:
+        args.escalate_pareto = False
+    return args
+
+
+def resolve_target_verdict(seed: dict) -> str:
+    """
+    Resolve the target verdict ('True' or 'False') for a seed based on
+    explicit configuration or semantic alignment between original_safety
+    and predicate polarity.
+    """
+    if "target_verdict" in seed and seed["target_verdict"] in ("True", "False"):
+        return seed["target_verdict"]
+
+    predicate = seed.get("predicate", "").lower()
+    is_negative = bool(
+        " not vulnerable" in predicate
+        or "**not** vulnerable" in predicate
+        or "is non-vulnerable" in predicate
+    )
+    original_safety = seed.get("original_safety", "").lower()
+
+    if original_safety == "safe":
+        return "True" if is_negative else "False"
+    elif original_safety == "vulnerable":
+        return "False" if is_negative else "True"
+
+    return "True"
 
 
 def _build_payload(
@@ -115,21 +190,39 @@ def _build_payload(
     batch_started_at: str,
     seed: dict,
     reflector_client: ReflectorClient | None = None,
+    pareto_registry: ParetoRegistry | None = None,
 ) -> dict:
     predicate = seed.get("predicate", "")
     taxonomy = classify_taxonomy_bucket(predicate)
     pareto_prompt = ""
     active_mutation_id = "baseline_v0"
 
+    registry = None
     if reflector_client is not None and reflector_client.registry is not None:
+        registry = reflector_client.registry
+    elif pareto_registry is not None:
+        registry = pareto_registry
+
+    if getattr(args, "escalate_pareto", False) and registry is not None:
+        pareto_prompt = ""
+        active_mutation_id = "baseline_v0"
+    elif registry is not None:
         try:
-            pareto_prompt = reflector_client.registry.get_pareto_prompt(taxonomy)
-            active_mutation_id = reflector_client.registry.get_pareto_variant_id(taxonomy)
+            pareto_prompt = registry.get_pareto_prompt(taxonomy)
+            active_mutation_id = registry.get_pareto_variant_id(taxonomy)
         except Exception:
             pareto_prompt = get_static_baseline_prompt(taxonomy)
             active_mutation_id = "baseline_v0"
     else:
         pareto_prompt = get_static_baseline_prompt(taxonomy)
+
+    target_verdict = resolve_target_verdict(seed)
+
+    reflector_enabled = getattr(args, "reflector", True)
+    if getattr(args, "pin_pareto", False):
+        reflector_enabled = False
+    elif getattr(args, "escalate_pareto", False):
+        reflector_enabled = True
 
     return {
         "participants": {
@@ -148,18 +241,28 @@ def _build_payload(
             **({"attempts_path": args.attempts_out} if args.attempts_out else {}),
             "topic": seed["topic"],
             "predicate": seed["predicate"],
-            "target_verdict": "True",
+            "target_verdict": target_verdict,
             "target_dimension": "Security Invariants",
             "num_rounds": 2,
             "max_refinements": 1,
             "output_file": args.output,
             "taxonomy_bucket": taxonomy,
+            # Seed metadata is the acceptance authority for Con evidence; never
+            # infer a defense obligation from judge prose at decision time.
+            "defense_obligation": seed.get("defense_obligation"),
+            "counter_evidence_validation_mode": getattr(
+                args, "counter_evidence_validation_mode", "shadow"
+            ),
             "reflector_prompt": pareto_prompt,
+            "reflector_mode": getattr(args, "reflector_mode", "symmetric"),
             "active_mutation_id": active_mutation_id,
             "gepa_dir": getattr(args, "gepa_dir", "artifacts/gepa"),
-            "reflector": getattr(args, "reflector", True),
+            "pin_pareto": getattr(args, "pin_pareto", False),
+            "escalate_pareto": getattr(args, "escalate_pareto", False),
+            "reflector": reflector_enabled,
             "reflector_in_process": getattr(args, "reflector_in_process", True),
             "reflector_url": getattr(args, "reflector_url", "http://127.0.0.1:8004"),
+            "slice_judge": getattr(args, "slice_judge", True),
         },
     }
 
@@ -246,7 +349,7 @@ async def _record_gepa_reflector_trace(
     status: str,
     i: int,
 ) -> None:
-    if ctx.reflector_client is None:
+    if getattr(ctx.args, "pin_pareto", False) or ctx.reflector_client is None:
         return
 
     predicate = seed.get("predicate", "")
@@ -350,7 +453,7 @@ async def _process_seed(
         await write_manifest("running")
 
         payload = _build_payload(
-            ctx.args, item_seed, checkpoint_path, record_path, ctx.batch_started_at, seed, ctx.reflector_client
+            ctx.args, item_seed, checkpoint_path, record_path, ctx.batch_started_at, seed, ctx.reflector_client, ctx.pareto_registry
         )
 
         try:
@@ -369,16 +472,22 @@ async def _process_seed(
 
 
 def _init_gepa_components(args: argparse.Namespace) -> tuple[Optional[ParetoRegistry], Optional[ReflectorClient]]:
-    if not args.reflector:
+    if not args.reflector and not getattr(args, "pin_pareto", False) and not getattr(args, "escalate_pareto", False):
         return None, None
     gepa_path = Path(args.gepa_dir)
     pareto_registry = ParetoRegistry(gepa_dir=gepa_path)
+    if getattr(args, "pin_pareto", False):
+        print(f"GEPA Pinned Pareto enabled: frozen frontier from '{args.gepa_dir}' (no live reflection/mutations).")
+        return pareto_registry, None
     reflector_client = ReflectorClient(
         registry=pareto_registry,
         base_url=args.reflector_url,
         in_process=args.reflector_in_process,
     )
-    print(f"GEPA Graph-Powered Reflector enabled (in_process={args.reflector_in_process}, gepa_dir='{args.gepa_dir}').")
+    if getattr(args, "escalate_pareto", False):
+        print(f"GEPA Progressive Escalation enabled: Cold R0 -> Warm Adaptive Pareto R1 from '{args.gepa_dir}'.")
+    else:
+        print(f"GEPA Graph-Powered Reflector enabled (in_process={args.reflector_in_process}, gepa_dir='{args.gepa_dir}').")
     return pareto_registry, reflector_client
 
 
@@ -475,7 +584,7 @@ async def run_batch():
 
     await asyncio.gather(*(_process_seed(sem, i, s, ctx) for i, s in enumerate(seeds)))
 
-    if pareto_registry is not None:
+    if pareto_registry is not None and not getattr(args, "pin_pareto", False):
         try:
             pareto_registry.sync_pareto_frontier()
             print(f"GEPA Pareto frontier synced to '{args.gepa_dir}/pareto_frontier.json'.")

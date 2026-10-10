@@ -360,8 +360,7 @@ def create_app(registry: Optional[ParetoRegistry] = None) -> FastAPI:
 
     @app.get("/pareto_prompt/{taxonomy}")
     def get_pareto_prompt_endpoint(taxonomy: TaxonomyBucket) -> Dict[str, str]:
-        prompt = reg.get_pareto_prompt(taxonomy)
-        variant_id = reg.get_pareto_variant_id(taxonomy)
+        prompt, variant_id = reg.get_pareto_entry(taxonomy)
         return {"taxonomy": taxonomy, "prompt": prompt, "variant_id": variant_id}
 
     @app.post("/reflect")
@@ -461,15 +460,34 @@ class ReflectorClient:
         self.base_url = base_url or "http://localhost:8004"
         self.in_process = in_process
 
-    async def get_pareto_prompt(self, taxonomy: TaxonomyBucket) -> str:
-        """Retrieve the current best Pareto-optimal prompt for the taxonomy bucket."""
+    async def get_pareto_entry(self, taxonomy: TaxonomyBucket) -> tuple[str, str]:
+        """Atomically retrieve (prompt, variant_id) for the taxonomy bucket in a single snapshot."""
         if not self.in_process:
             import httpx
             async with httpx.AsyncClient(base_url=self.base_url) as client:
                 resp = await client.get(f"/pareto_prompt/{taxonomy}")
                 resp.raise_for_status()
-                return str(resp.json().get("prompt", get_static_baseline_prompt(taxonomy)))
-        return self.registry.get_pareto_prompt(taxonomy)
+                data = resp.json()
+                return (
+                    str(data.get("prompt", get_static_baseline_prompt(taxonomy))),
+                    str(data.get("variant_id", "baseline_v0")),
+                )
+        if hasattr(self.registry, "get_pareto_entry"):
+            return self.registry.get_pareto_entry(taxonomy)
+        return (
+            self.registry.get_pareto_prompt(taxonomy),
+            self.registry.get_pareto_variant_id(taxonomy),
+        )
+
+    async def get_pareto_prompt(self, taxonomy: TaxonomyBucket) -> str:
+        """Retrieve the current best Pareto-optimal prompt for the taxonomy bucket."""
+        prompt, _ = await self.get_pareto_entry(taxonomy)
+        return prompt
+
+    async def get_pareto_variant_id(self, taxonomy: TaxonomyBucket) -> str:
+        """Retrieve the variant ID of the current best Pareto-optimal prompt."""
+        _, variant_id = await self.get_pareto_entry(taxonomy)
+        return variant_id
 
     async def record_attempt_and_classify_outcome(
         self,

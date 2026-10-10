@@ -77,6 +77,9 @@ def validate_checkpoint(checkpoint: Dict[str, Any], expected: Dict[str, Any]) ->
     mismatches = []
     for key, expected_value in expected.items():
         actual_value = checkpoint.get(key)
+        # For optional boolean controls, absent in legacy checkpoint is equivalent to False
+        if key in ("escalate_pareto", "pin_pareto") and expected_value is False and actual_value is None:
+            continue
         if actual_value != expected_value:
             mismatches.append(
                 {

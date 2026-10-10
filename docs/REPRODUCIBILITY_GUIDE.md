@@ -216,3 +216,26 @@ diff artifacts/runs/trip-v1-seed42/batch_manifest.json artifacts/runs/cell1-repl
 ```
 
 Zero diff output across corpus, attempts, and manifest confirms 100% deterministic reproducibility.
+
+---
+
+## 7. Structured Output Modes & GBNF Sampling Invariance
+
+Local quantized inference models (4B debaters, 12B judges) exhibit distinct sampling behaviors depending on grammar constraint flags:
+
+### A. Forgiving vs. Strict Schema Modes
+- **Chapter 1 Baseline (Forgiving Generation)**:
+  - In the canonical N=50 progressive escalation benchmarks, the judge executed without rigid grammar constraints (`strict=False`), allowing reasoning tokens, thought tags (`<|channel>thought`), and leading whitespace to pass without triggering sampler rejection.
+  - Parsing relied on resilient post-hoc JSON extraction (`extract_first_json_object`) and Pydantic validation.
+- **Strict GBNF Mode (`strict=True`)**:
+  - Compiles JSON schemas into strict token-level GBNF grammar constraints in Ollama.
+  - Can cause quantized reasoning models (e.g. Gemma 4) to deadlock or exhaust completion budgets inside thought channels, resulting in empty completions (`content=""`).
+  - **Reproducibility Invariant**: The judge adjudication call in `adk_debate_judge.py` defaults to `strict=False` to preserve compatibility with quantized local inference.
+
+### B. Thinking Budget Invariant
+- The `<thinking_process>` instruction in `judge_system_prompt` is explicitly bounded to a maximum of 150 words (1–2 concise sentences per analysis step).
+- This prevents long-tail token exhaustion on complex concurrency scenarios (e.g., `ipv6_defrag`) and reserves adequate completion budget for `winner`, `anchors`, `mechanism`, and `counterfactual` fields.
+
+### C. Defense-in-Depth Truncation Recovery
+- The helper `_attempt_close_json` in `src/agentbeats/structured_output.py` provides linear $O(N)$ non-backtracking auto-closing of unclosed delimiters (`"`, `]`, `}`) if an LLM is prematurely stopped at context limits.
+- If upstream inference engines change or models are swapped, the unconstrained fallback mechanism in `_execute_repair_completion` guarantees that parsing degrades gracefully without silent corruption or unhandled EOF exceptions.
