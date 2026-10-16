@@ -470,3 +470,84 @@ See `AGENT.md` for repository-specific coding and review instructions.
 ## License
 
 MIT License. See `LICENSE`.
+
+uv run python scenarios/debate/run_batch.py \
+  --seeds scenarios/debate/cve_seeds_specific_anchor_10.jsonl \
+  --run-id pilot-spec-anchor-10-fresh \
+  --output test_corpus_spec_anchor_10_fresh.jsonl \
+  --attempts-out artifacts/attempts/pilot-spec-anchor-10-fresh.jsonl \
+  --manifest-out artifacts/runs/pilot-spec-anchor-10-fresh/batch_manifest.json \
+  --mode record \
+  --escalate-pareto \
+  --gepa-dir artifacts/gepa_pareto_50 \
+  --max-concurrency 1 \
+  --counter-evidence-validation-mode \
+  -
+
+
+OPENAI_API_BASE="http://localhost:1234/v1" \
+OPENAI_API_KEY="lm-studio" \
+DEBATER_MODEL="openai/google/gemma-4-12b-qat" \
+VERIFIER_MODEL="openai/google/gemma-4-12b-qat" \
+JUDGE_MODEL="vertex_ai/gemini-3.8-flash" \
+./scenarios/debate/start_stack.sh
+
+
+OPENAI_API_BASE="http://localhost:1234/v1" \
+OPENAI_API_KEY="lm-studio" \
+uv run python scenarios/debate/cve_seed_loader.py \
+  --existing-seeds scenarios/debate/cve_seeds_500_clean.jsonl \
+  --target-total 524 \
+  --output scenarios/debate/cve_seeds_524_clean.jsonl \
+  --explainer-model "openai/google/gemma-4-12b-qat" \
+  --audit-predicates \
+  --auditor-model "vertex_ai/gemini-3.8-flash" \
+  --telemetry-path artifacts/telemetry/seed_expansion_gemma12b_lmstudio.json \
+  --attempts-path artifacts/telemetry/seed_expansion_gemma12b_lmstudio_attempts.jsonl
+
+
+
+
+uv run python scenarios/debate/run_batch.py \
+  --seeds scenarios/debate/cve_seeds_benchmark_50.jsonl \
+  --run-id gemini3-baseline-50-rep5 \
+  --output test_corpus_gemini3_baseline_50_rep5.jsonl \
+  --attempts-out artifacts/attempts/gemini3-baseline-50-rep5.jsonl \
+  --manifest-out artifacts/runs/gemini3-baseline-50-rep5/batch_manifest.json \
+  --seed 42 \
+  --mode record \
+  --no-escalate-pareto \
+  --no-reflector \
+  --slice-judge \
+  --max-concurrency 1 \
+  --counter-evidence-validation-mode enforce_deterministic \
+  --resume
+
+
+
+DEBATER_MODEL="vertex_ai/gemini-3.5-flash" \
+GENERATOR_MODEL="vertex_ai/gemini-3.5-flash" \
+VERIFIER_MODEL="vertex_ai/gemini-3.8-flash" \
+JUDGE_MODEL="vertex_ai/gemini-3.8-flash" \
+VERTEXAI_LOCATION="global" \
+./scenarios/debate/start_stack.sh
+
+
+uv run python scenarios/debate/run_batch.py \
+  --seeds scenarios/debate/cve_seeds_benchmark_50.jsonl \
+  --run-id gemini3-escalate-pareto-50-rep5 \
+  --output test_corpus_gemini3_escalate_pareto_50_rep5.jsonl \
+  --attempts-out artifacts/attempts/gemini3-escalate-pareto-50-rep5.jsonl \
+  --manifest-out artifacts/runs/gemini3-escalate-pareto-50-rep5/batch_manifest.json \
+  --cassette-path artifacts/cassettes/gemini3-escalate-pareto-50-rep5.json \
+  --gepa-dir artifacts/gepa_gemini3_pareto_50 \
+  --seed 42 \
+  --mode record \
+  --escalate-pareto \
+  --reflector \
+  --reflector-in-process \
+  --reflector-mode symmetric \
+  --slice-judge \
+  --max-concurrency 1 \
+  --counter-evidence-validation-mode enforce_deterministic \
+  --resume
