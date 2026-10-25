@@ -28,6 +28,16 @@ Three contract families:
 
 Everything else is either unprovable under V1 or must not be treated as a valid defense receipt.
 
+## 2.5 Validation-mode behavior (off / shadow / enforce_deterministic)
+
+The current `_process_verifier_audit` skips `validate_counter_evidence` when `counter_evidence_validation_mode == "off"`. The discriminated-union change (Step 1) makes `counter_evidence` required for Con, but the validator call is still mode-gated. Define explicit behavior:
+
+- **`off`:** Con receipts are not validated. A Con verdict with a structurally complete `counter_evidence` is accepted as `con_win` without deterministic confirmation. This mode is for development/exploration only and must not be used in scored runs. Receipts produced in off mode are labeled `con_win_unvalidated`.
+- **`shadow`:** `validate_counter_evidence` runs and its result is recorded, but does not gate acceptance. Con wins are accepted regardless of receipt status. Used for calibration and funnel measurement.
+- **`enforce_deterministic`:** `validate_counter_evidence` runs and gates acceptance. Con is accepted only if `status == deterministically_confirmed`. This is the scored mode.
+
+The `con_win` receipt requirement (Step 1) applies in all modes: off mode permits `con_win` without a confirmed receipt, but labels it unvalidated. Shadow and enforce modes require the receipt attempt; only enforce mode requires confirmation.
+
 ## 3. The design mismatch
 
 The judge prompt says only "use a closed-vocabulary defense kind/enforcement/value relation." It does not give:
@@ -60,9 +70,22 @@ outcome: pro_win | con_win | unresolved
 - `pro_win` keeps the existing exploit-verification route.
 - `unresolved` may retain the debate scores/reasoning but cannot export a training sample, trigger a Con halt, or be silently recast as Pro.
 
-A nullable `winner` can work, but an explicit outcome is clearer operationally. Downstream logic currently branches on only two winners, so the plan must name the handling points: gates, verifier flow, export/acceptance, checkpoint phase, failure reporting, and halt policy.
+**Unresolved branch handling (CodeRabbit finding):** Downstream logic currently branches on only two winners (Pro/Con). An unresolved result must enter an explicit branch, not fall through to Pro mechanism checks or become Pro. Specify handling at each point:
+- **Gates (`_collect_soft_checks`):** unresolved does not receive Pro mechanism checks (mechanism_grounding, mechanism_evidence, mechanism_template) and does not produce a `con_win_counter_evidence` gate. It records `counter_evidence: null` and `outcome: unresolved`.
+- **Verifier flow (`_process_verifier_audit`):** unresolved skips the verifier audit (no verifier call). Returns `is_valid=False`, `verifier_meta["error"]="unresolved_no_valid_receipt"`.
+- **Export/acceptance (`_export_accepted_sample`):** unresolved is **not** exported as a training sample. No consensus verdict is produced.
+- **Checkpoint phase:** written as `"phase": "unresolved"` with `last_judge_reason="unresolved_no_valid_receipt"`.
+- **Failure reporting:** counted as a distinct outcome in the funnel (not a rejection, not an acceptance).
+- **Halt policy:** unresolved does **not** trigger `--halt-on-con-win` (only confirmed Con wins halt).
+
+A nullable `winner` can work, but an explicit `outcome` field is clearer operationally. Downstream logic must branch on `outcome`, not `winner`.
 
 **Files:** `debate_judge_common.py` (DebateEval schema), `adk_debate_judge.py` (judge prompt / schema).
+
+**Checkpoint compatibility (CodeRabbit finding):** `_get_judge_eval` rehydrates `DebateEval` from `active_checkpoint["judge_eval"]`. If the implementation replaces `winner` with `outcome` or changes required receipt fields, existing checkpoints may fail validation. Define a checkpoint version (`schema_version`), migration, or explicit invalidation rule:
+- Bump `schema_version` when the DebateEval schema changes.
+- On resume, if `checkpoint.schema_version < current`, either migrate (map `winner` → `outcome`) or invalidate and re-run from R0.
+- Log the invalidation reason; do not silently skip.
 
 ### Step 2 — Put the exact obligation and contract template in the judge's context
 
@@ -99,6 +122,8 @@ For each, list the compatible `enforcement`/`value_relation` pairings explicitly
 
 ### Step 3 — Create one deterministic receipt extractor before the judge
 
+**Canonical code block (CodeRabbit finding):** The judge may receive `judge_code_block` from `slice_code_for_judge`, while validation receives `current_sample_block`. The extractor must define one canonical code block shared by extractor, judge, and validator, or preserve a verified mapping between the two. Candidate source spans must resolve consistently in both contexts. Recommended: the extractor runs on `current_sample_block` (the full seed code) and produces spans as `(start_offset, end_offset)` into that block; the judge receives the same block plus the candidate list; the validator re-resolves spans against `current_sample_block`.
+
 The code can identify candidate `if` guards, operations, value uses, branch containment, and return/goto behavior. Let that component emit a small set of valid receipt candidates. The judge should select among candidates — or return "no valid receipt" — rather than inventing anchors, values, and labels from scratch.
 
 That turns the task from:
@@ -108,6 +133,8 @@ into:
 > choose candidate C2, or state that none proves the defense
 
 It is much better matched to a small model and preserves the validator's authority.
+
+**Candidate selection contract (CodeRabbit finding):** Each extractor candidate receives an immutable ID (e.g., `C1`, `C2`). The judge's selection must reference that ID. The validator then checks that the returned `counter_evidence` exactly matches the extractor output for the selected candidate (same anchors, same values, same structural relation) before proceeding to structural proof. If the returned receipt does not match any candidate, it is rejected as `unsupported_candidate`. This prevents the judge from inventing anchors or values while still allowing it to abstain ("no valid receipt").
 
 **Extractor must not manufacture proof (R2):** The extractor should discover plausible structural relationships, not label every syntactic guard as a valid defense. A guard may check `len`, while the dangerous operation uses a transformed value, a different variable, or a value that can change between the check and use. A matching string or nearby `if` is not sufficient.
 
@@ -121,6 +148,19 @@ If the V1 validator only supports specific AST/CFG patterns, anything outside th
 **Files:** new module (e.g., `con_receipt_extractor.py`) or extension of `adk_debate_verifier.py`. Called before `_get_judge_eval`.
 
 ### Step 4 — Keep the current validator strict, but instrument its reasons
+
+**Complete V1 compatibility matrix (CodeRabbit finding):** Define and enforce exact supported `enforcement`/`value_relation` tuples for each `defense_kind`. Replace the vague "compatible relation" allowance with precise tuples:
+
+| defense_kind | enforcement | value_relation |
+|---|---|---|
+| `upper_bound_reject` | `reject_before_operation` | `guarded_value_equals_operation_value` |
+| `range_guarded_operation` | `operation_inside_safe_branch` | `guarded_value_equals_operation_value` |
+| `null_check` | `reject_before_operation` | `guarded_value_equals_operation_value` |
+| `equality_reject` | `reject_before_operation` | `guarded_value_equals_operation_value` |
+
+Reject every unsupported pairing (including `guarded_value_bounds_offset_plus_width` where unsupported) before returning `deterministically_confirmed`. Add positive and negative fixtures covering the full matrix.
+
+**Note:** `CounterEvidence` currently admits more `defense_kind` values than V1 can prove (e.g., `lower_bound_reject`, `lock_before_shared_access`, `validated_value_forwarded`, `lock_held_at_operation`). These should be declared intentionally unsupported in V1 or implemented; do not expose them as apparently valid receipt options to the judge.
 
 Do not weaken `deterministically_confirmed` merely to make Option B fire. Instead report the failure funnel:
 
@@ -223,7 +263,7 @@ Similarly, `deterministically_confirmed` should mean that the specified defense 
 1. **Freeze the current baseline.** Preserve the 54 Con-win receipt records, exact prompts, model identifiers, schemas, validator version, and rejection reasons.
 2. **Build validator fixtures.** Include known-positive and known-negative cases for each supported defense family. Confirm that the validator recognizes the former and rejects the latter.
 3. **Make receipt production obligation-aware.** Add the actual obligation, compatible enums, and complete template to the judge context; make Con receipts structurally mandatory (R1).
-4. **Add candidate extraction.** Start with one defense family — probably `upper_bound` — rather than attempting general-purpose C control-flow proof in one iteration. Produce candidates with source spans, variable identities, branch relationships, and explicit unsupported conditions (R2).
+4. **Add candidate extraction.** Start with `upper_bound` only (the only family with V1 support). Mark `null_dereference` and `identity_mismatch` as **deferred** until their candidates and fixtures exist. Do not expose unsupported defense kinds to the judge. Produce candidates with source spans, variable identities, branch relationships, and explicit unsupported conditions (R2).
 5. **Replay the same cases.** Compare receipt presence, schema validity, deterministic confirmation, false positives, false negatives, abstentions, and cost against the frozen baseline.
 6. **Only then test escalation.** Evaluate halt-on-valid-receipt as a separate policy after the receipt pipeline demonstrably produces valid confirmations.
 
