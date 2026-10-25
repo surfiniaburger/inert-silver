@@ -34,7 +34,7 @@ The current `_process_verifier_audit` skips `validate_counter_evidence` when `co
 
 - **`off`:** Con receipts are not validated. A Con verdict with a structurally complete `counter_evidence` is accepted as `con_win` without deterministic confirmation. This mode is for development/exploration only and must not be used in scored runs. Receipts produced in off mode are labeled `con_win_unvalidated`.
 - **`shadow`:** `validate_counter_evidence` runs and its result is recorded, but does not gate acceptance. Con wins are accepted regardless of receipt status. Used for calibration and funnel measurement.
-- **`enforce_deterministic`:** `validate_counter_evidence` runs and gates acceptance. Con is accepted only if `status == deterministically_confirmed`. This is the scored mode.
+- **`enforce_deterministic`:** `validate_counter_evidence` runs and gates acceptance. Con is accepted only if `status == deterministically_confirmed`. If the obligation is missing or not v1, enforce mode **rejects** the Con result — it does not fall back to `con_win_counter_evidence` for acceptance. The raw gate is never an acceptance path in enforce mode. This is the scored mode.
 
 The `con_win` receipt requirement (Step 1) applies in all modes: off mode permits `con_win` without a confirmed receipt, but labels it unvalidated. Shadow and enforce modes require the receipt attempt; only enforce mode requires confirmation.
 
@@ -78,13 +78,13 @@ outcome: pro_win | con_win | unresolved
 - **Failure reporting:** counted as a distinct outcome in the funnel (not a rejection, not an acceptance).
 - **Halt policy:** unresolved does **not** trigger `--halt-on-con-win` (only confirmed Con wins halt).
 
-A nullable `winner` can work, but an explicit `outcome` field is clearer operationally. Downstream logic must branch on `outcome`, not `winner`.
+`winner` is `null` when `outcome` is `unresolved`. `outcome` is the authoritative field. Downstream logic must branch on `outcome`, not `winner`. Do not persist either debater as the winner for unresolved results. Update `DebateEval` to allow a nullable `winner`.
 
 **Files:** `debate_judge_common.py` (DebateEval schema), `adk_debate_judge.py` (judge prompt / schema).
 
 **Checkpoint compatibility (CodeRabbit finding):** `_get_judge_eval` rehydrates `DebateEval` from `active_checkpoint["judge_eval"]`. If the implementation replaces `winner` with `outcome` or changes required receipt fields, existing checkpoints may fail validation. Define a checkpoint version (`schema_version`), migration, or explicit invalidation rule:
 - Bump `schema_version` when the DebateEval schema changes.
-- On resume, if `checkpoint.schema_version < current`, either migrate (map `winner` → `outcome`) or invalidate and re-run from R0.
+- On resume, if `checkpoint.schema_version < current`, migrate only records that satisfy the new Con contract (complete `counter_evidence` + `deterministically_confirmed` receipt). Existing checkpoints with `winner == "con_debater"` but missing or invalid `counter_evidence` must be **invalidated and re-run from R0**, not migrated. Log the invalidation reason; do not silently skip.
 - Log the invalidation reason; do not silently skip.
 
 ### Step 2 — Put the exact obligation and contract template in the judge's context
@@ -179,7 +179,7 @@ At present, "invalid contract" conflates several very different remediation path
 
 **Compatibility checking:** `extract_counter_evidence_proof` checks `enforcement` for each structural branch, but the `null_check` branch does not validate `value_relation`. A receipt can therefore use an unrelated non-empty relation (e.g., `guarded_value_bounds_offset_plus_width`) and still receive `deterministically_confirmed` if the null check dominates the operation. Add explicit per-defense_kind compatibility checks:
 - `range_guarded_operation`: requires `enforcement == operation_inside_safe_branch` AND `value_relation == guarded_value_equals_operation_value`.
-- `null_check`: requires `enforcement == reject_before_operation` (or `operation_inside_safe_branch`) AND `value_relation == guarded_value_equals_operation_value` (or compatible relation).
+- `null_check`: requires `enforcement == reject_before_operation` AND `value_relation == guarded_value_equals_operation_value`. (Exact tuple only — no safe-branch or "compatible relation" allowance.)
 - Reject schema-valid but incompatible pairings before returning `deterministically_confirmed`.
 
 Invalid literals are already rejected by Pydantic `Literal` fields on the ordinary judge-output path, but negative fixtures should cover both invalid literals and incompatible pairings to protect direct validator callers.
