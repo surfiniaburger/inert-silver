@@ -115,6 +115,14 @@ Perform a bit-level data-flow trace to confirm or debunk the claim.
                 model_config={"verifier": verifier_model},
                 created_at=clock_now,
             )
+            verifier_kwargs = {}
+            v_api_base = os.getenv("VERIFIER_API_BASE", os.getenv("OPENAI_API_BASE"))
+            if v_api_base and verifier_model.startswith("openai/"):
+                verifier_kwargs["api_base"] = v_api_base
+            v_api_key = os.getenv("VERIFIER_API_KEY", os.getenv("OPENAI_API_KEY"))
+            if v_api_key and verifier_model.startswith("openai/"):
+                verifier_kwargs["api_key"] = v_api_key
+
             report = await call_structured(
                 replay_manager=replay_manager,
                 model=verifier_model,
@@ -129,6 +137,7 @@ Perform a bit-level data-flow trace to confirm or debunk the claim.
                 repair_model=verifier_model,
                 stage="verifier_audit",
                 options={"keep_alive": "24h"},
+                **verifier_kwargs,
             )
             if report.logic_error:
                 le_clean = report.logic_error.strip().lower()

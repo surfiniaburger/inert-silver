@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Literal, Optional
 
 from a2a.types import (
@@ -60,6 +60,20 @@ class DebateEval(BaseModel):
     verifier_report: str = "not_applicable"
     support_level: Literal["supported", "unsupported", "inconclusive"] = "supported"
     counter_evidence: Optional[CounterEvidence] = None
+
+    @field_validator("counter_evidence", mode="before")
+    @classmethod
+    def unwrap_single_counter_evidence(cls, value):
+        """Accept one legacy list wrapper without weakening the evidence contract.
+
+        Some schema-fallback providers return ``counter_evidence`` as ``[{...}]``
+        even though the contract is one object.  Unwrapping exactly one item is
+        lossless; empty and multi-item lists remain invalid and therefore cannot
+        influence a Con acceptance decision.
+        """
+        if isinstance(value, list) and len(value) == 1:
+            return value[0]
+        return value
 
 
 class VerifierReport(BaseModel):

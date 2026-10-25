@@ -33,6 +33,8 @@ from scenarios.debate.reflector_schemas import (
     get_static_baseline_prompt,
 )
 
+SEND_MESSAGE_TIMEOUT = int(os.getenv("SEND_MESSAGE_TIMEOUT", "600"))
+
 
 def _load_processed_predicates(output_path: str) -> set:
     processed = set()
@@ -146,6 +148,18 @@ def _parse_args(cmd_args: list[str] | None = None) -> argparse.Namespace:
         action="store_false",
         help="Disable progressive escalation (standard baseline).",
     )
+    parser.add_argument(
+        "--halt-on-con-win",
+        action="store_true",
+        default=False,
+        help="Symmetric termination: halt refinement when Con wins a round (preserves Con's defense).",
+    )
+    parser.add_argument(
+        "--max-refinements",
+        type=int,
+        default=None,
+        help="Maximum refinement rounds for judge (defaults to 1 if progressive escalation is enabled, 0 if disabled).",
+    )
     args = parser.parse_args(cmd_args)
     raw_args = sys.argv[1:] if cmd_args is None else cmd_args
     explicit_pin = "--pin-pareto" in raw_args
@@ -154,6 +168,10 @@ def _parse_args(cmd_args: list[str] | None = None) -> argparse.Namespace:
         parser.error("Cannot specify both --pin-pareto and --escalate-pareto.")
     if explicit_pin:
         args.escalate_pareto = False
+    if args.max_refinements is None:
+        args.max_refinements = 1 if args.escalate_pareto else 0
+    elif args.max_refinements < 0:
+        parser.error("--max-refinements must be greater than or equal to 0.")
     return args
 
 
@@ -244,7 +262,11 @@ def _build_payload(
             "target_verdict": target_verdict,
             "target_dimension": "Security Invariants",
             "num_rounds": 2,
-            "max_refinements": 1,
+            "max_refinements": getattr(
+                args,
+                "max_refinements",
+                1 if getattr(args, "escalate_pareto", False) else 0,
+            ),
             "output_file": args.output,
             "taxonomy_bucket": taxonomy,
             # Seed metadata is the acceptance authority for Con evidence; never
@@ -259,6 +281,7 @@ def _build_payload(
             "gepa_dir": getattr(args, "gepa_dir", "artifacts/gepa"),
             "pin_pareto": getattr(args, "pin_pareto", False),
             "escalate_pareto": getattr(args, "escalate_pareto", False),
+            "halt_on_con_win": getattr(args, "halt_on_con_win", False),
             "reflector": reflector_enabled,
             "reflector_in_process": getattr(args, "reflector_in_process", True),
             "reflector_url": getattr(args, "reflector_url", "http://127.0.0.1:8004"),
@@ -457,12 +480,20 @@ async def _process_seed(
         )
 
         try:
-            result = await send_message(json.dumps(payload), ctx.judge_url)
+            async with asyncio.timeout(SEND_MESSAGE_TIMEOUT):
+                result = await send_message(json.dumps(payload), ctx.judge_url)
             print(f"  Result received for seed {i+1}. Status: {result.get('status')}")
             status = result.get("status") or "completed"
             excerpt = str(result.get("response", ""))[:500]
             await write_manifest(status, response_excerpt=excerpt)
             await _record_gepa_reflector_trace(ctx, seed, item_seed, payload, result, status, i)
+        except TimeoutError:
+            msg = f"send_message timed out after {SEND_MESSAGE_TIMEOUT}s"
+            print(f"  ERROR: Seed {i+1} failed: {msg}")
+            await write_manifest("error", error=msg)
+            await _record_gepa_reflector_trace(
+                ctx, seed, item_seed, payload, {"decision": "rejected", "reject_reason": msg}, "error", i
+            )
         except Exception as e:
             print(f"  ERROR: Seed {i+1} failed: {e}")
             await write_manifest("error", error=str(e))

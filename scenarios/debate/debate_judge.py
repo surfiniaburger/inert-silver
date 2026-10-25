@@ -29,6 +29,14 @@ from agentbeats.models import EvalRequest, EvalResult
 from agentbeats.tool_provider import ToolProvider
 from google.adk.models.lite_llm import LiteLlm
 from debate_judge_common import DebateEval, debate_judge_agent_card
+import litellm
+import litellm.constants
+import litellm.utils
+litellm.num_retries = int(os.getenv("LITELLM_NUM_RETRIES", "6"))
+litellm.constants.INITIAL_RETRY_DELAY = float(os.getenv("INITIAL_RETRY_DELAY", "5.0"))
+litellm.utils.INITIAL_RETRY_DELAY = float(os.getenv("INITIAL_RETRY_DELAY", "5.0"))
+litellm.constants.MAX_RETRY_DELAY = float(os.getenv("MAX_RETRY_DELAY", "60.0"))
+litellm.utils.MAX_RETRY_DELAY = float(os.getenv("MAX_RETRY_DELAY", "60.0"))
 
 
 logging.basicConfig(level=logging.INFO)
@@ -70,7 +78,7 @@ class DebateJudge(GreenAgent):
                 debate_text += f"Pro Argument {i}: {pro}\n"
                 debate_text += f"Con Argument {i}: {con}\n"
 
-            await updater.update_status(TaskState.working, new_agent_text_message(f"Debate orchestration finished. Starting evaluation."))
+            await updater.update_status(TaskState.working, new_agent_text_message("Debate orchestration finished. Starting evaluation."))
             logger.info("Debate orchestration finished. Evaluating debate.")
             debate_eval: DebateEval = await self.judge_debate(req.config["topic"], debate_text)
             logger.info(f"Debate Evaluation:\n{debate_eval.model_dump_json()}")
@@ -192,9 +200,9 @@ async def main():
 
     if args.cloudflare_quick_tunnel:
         from agentbeats.cloudflare import quick_tunnel
-        agent_url_cm = quick_tunnel(f"http://{args.host}:{args.port}")
+        agent_url_cm = quick_tunnel(f"http://{args.host}:{args.port}")  # NOSONAR
     else:
-        agent_url_cm = contextlib.nullcontext(args.card_url or f"http://{args.host}:{args.port}/")
+        agent_url_cm = contextlib.nullcontext(args.card_url or f"http://{args.host}:{args.port}/")  # NOSONAR
 
     async with agent_url_cm as agent_url:
         agent = DebateJudge(model=args.model)

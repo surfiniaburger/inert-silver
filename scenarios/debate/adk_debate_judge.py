@@ -789,6 +789,8 @@ class _EvalContext:
         self.resume = _truthy(req.config.get("resume", False))
         self.pin_pareto = _truthy(req.config.get("pin_pareto", False))
         self.escalate_pareto = _truthy(req.config.get("escalate_pareto", False))
+        self.halt_on_con_win = _truthy(req.config.get("halt_on_con_win", False))
+        self.last_debate_winner: str | None = None
 
         self.current_input_block = req.config.get("topic", "")
         self.controls = _checkpoint_controls(
@@ -1393,6 +1395,14 @@ Never return fewer than 2 verbatim anchors in 'anchors'.
             if active_checkpoint and _phase_at_least(checkpoint_phase, "judge_complete"):
                 debate_eval = DebateEval(**active_checkpoint["judge_eval"])
             else:
+                judge_kwargs = {}
+                j_api_base = os.getenv("JUDGE_API_BASE", os.getenv("OPENAI_API_BASE"))
+                if j_api_base and ctx.judge_model.startswith("openai/"):
+                    judge_kwargs["api_base"] = j_api_base
+                j_api_key = os.getenv("JUDGE_API_KEY", os.getenv("OPENAI_API_KEY"))
+                if j_api_key and ctx.judge_model.startswith("openai/"):
+                    judge_kwargs["api_key"] = j_api_key
+
                 debate_eval = await call_structured(
                     replay_manager=ctx.replay_manager,
                     model=ctx.judge_model,
@@ -1407,6 +1417,7 @@ Never return fewer than 2 verbatim anchors in 'anchors'.
                     repair_model=ctx.judge_model,
                     stage="judge_adjudication",
                     options={"keep_alive": "24h"},
+                    **judge_kwargs,
                 )
                 ctx.write_checkpoint(
                     "judge_complete",
@@ -1700,9 +1711,7 @@ Never return fewer than 2 verbatim anchors in 'anchors'.
             if has_formal_obligation and ctx.counter_evidence_validation_mode == "enforce_deterministic":
                 is_con_confirmed = receipt.get("status") == "deterministically_confirmed"
             else:
-                is_con_confirmed = bool(con_gate.get("pass") and con_gate.get("applicable")) or (
-                    receipt.get("status") == "deterministically_confirmed"
-                )
+                is_con_confirmed = receipt.get("status") == "deterministically_confirmed"
 
             if is_con_confirmed:
                 verifier_meta["error"] = "validated_con_counter_evidence"
@@ -1991,6 +2000,7 @@ Never return fewer than 2 verbatim anchors in 'anchors'.
         if not debate_eval:
             return False, judge_reason
         last_judge_reason = judge_reason
+        ctx.last_debate_winner = debate_eval.winner
 
         # Step 4: Gates
         normalized_anchors = self._extract_normalized_candidate_anchors(debate_eval, current_sample_block)
@@ -2150,6 +2160,23 @@ Never return fewer than 2 verbatim anchors in 'anchors'.
                     ctx, i, req, last_judge_reason, updater
                 )
                 if accepted:
+                    return
+                # Symmetric termination: halt if Con won this round and flag is set.
+                if ctx.halt_on_con_win and ctx.last_debate_winner == "con_debater":
+                    logger.info("Symmetric termination: Con won Round %d. Halting as defended.", i + 1)
+                    record_path = req.config.get("record_path", f"artifacts/runs/{ctx.run_id}.json")
+                    ctx.replay_manager.save_record(record_path)
+                    ctx.write_checkpoint(
+                        "rejected",
+                        i,
+                        last_judge_reason="con_win_defended",
+                        output_file=ctx.output_file,
+                    )
+                    await updater.update_status(TaskState.working, new_agent_text_message("Con defended; halting (symmetric termination)."))
+                    await updater.add_artifact(
+                        parts=[TextPart(text="Con defended; halting (symmetric termination).")],
+                        name="Result",
+                    )
                     return
                 if ctx.resume_checkpoint and int(ctx.resume_checkpoint.get("refinement_round", -1)) > i:
                     continue

@@ -25,6 +25,34 @@ def test_parse_args_pre_filter_flags():
     assert args_custom.model_dir == "custom/models"
 
 
+def test_parse_args_max_refinements():
+    """Verify --max-refinements default and explicit behaviors."""
+    # Default with escalate_pareto=True -> max_refinements = 1
+    args_default = _parse_args([])
+    assert args_default.escalate_pareto is True
+    assert args_default.max_refinements == 1
+
+    # Escalation disabled -> max_refinements = 0
+    args_no_escalate = _parse_args(["--no-escalate-pareto"])
+    assert args_no_escalate.escalate_pareto is False
+    assert args_no_escalate.max_refinements == 0
+
+    # Pinned Pareto (escalation off) -> max_refinements = 0
+    args_pin = _parse_args(["--pin-pareto"])
+    assert args_pin.escalate_pareto is False
+    assert args_pin.max_refinements == 0
+
+    # Explicit override
+    args_explicit = _parse_args(["--max-refinements", "3"])
+    assert args_explicit.max_refinements == 3
+
+    args_explicit_zero = _parse_args(["--escalate-pareto", "--max-refinements", "0"])
+    assert args_explicit_zero.max_refinements == 0
+
+    with pytest.raises(SystemExit):
+        _parse_args(["--max-refinements", "-1"])
+
+
 def test_build_payload_structure():
     """Verify _build_payload creates valid green agent request payload."""
     class DummyArgs:
@@ -36,6 +64,7 @@ def test_build_payload_structure():
         record_dir = "artifacts/runs"
         attempts_out = ""
         output = "output.jsonl"
+        max_refinements = 0
 
     seed = {"topic": "test code", "predicate": "buffer overflow check"}
     payload = _build_payload(DummyArgs(), 42, "checkpoint.json", "record.json", "2026-07-30T12:00:00Z", seed)
@@ -44,6 +73,7 @@ def test_build_payload_structure():
     assert payload["config"]["seed"] == 42
     assert payload["config"]["topic"] == "test code"
     assert payload["config"]["predicate"] == "buffer overflow check"
+    assert payload["config"]["max_refinements"] == 0
 
 
 @pytest.mark.asyncio

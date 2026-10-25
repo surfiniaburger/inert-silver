@@ -487,9 +487,9 @@ uv run python scenarios/debate/run_batch.py \
 
 OPENAI_API_BASE="http://localhost:1234/v1" \
 OPENAI_API_KEY="lm-studio" \
-DEBATER_MODEL="openai/google/gemma-4-12b-qat" \
+DEBATER_MODEL="openai/gemma-4-e4b-it" \
 VERIFIER_MODEL="openai/google/gemma-4-12b-qat" \
-JUDGE_MODEL="vertex_ai/gemini-3.8-flash" \
+JUDGE_MODEL="openai/google/gemma-4-12b-qat" \
 ./scenarios/debate/start_stack.sh
 
 
@@ -551,3 +551,325 @@ uv run python scenarios/debate/run_batch.py \
   --max-concurrency 1 \
   --counter-evidence-validation-mode enforce_deterministic \
   --resume
+
+
+---
+
+### Uzu Engine & Qwen 3.5 4B On-Device Inference Setup (macOS 26+)
+
+Uzu requires Python 3.12 and Metal 4 (`MTL4CommandQueueDescriptor`, macOS $\ge$ 26).
+
+#### 1. Initialize Python 3.12 Environment & Install `uzu`
+```bash
+# Create Python 3.12 virtual environment (e.g. in .venv-uzu or /tmp/uzu_env)
+uv venv .venv-uzu --python 3.12
+
+# Activate or install via uv pip directly
+uv pip install --python .venv-uzu/bin/python uzu
+```
+*(Note: On macOS 26+, `uv pip install uzu` directly pulls the matching `macosx_26_0_arm64` wheel from PyPI. If installing manually on custom builds, download the wheel from PyPI and install via `uv pip install <wheel_path>`.)*
+
+#### 2. Create the Benchmark Test Script (`scripts/test_uzu_qwen.py`)
+```python
+import asyncio
+import time
+from uzu import (
+    ChatConfig,
+    ChatMessage,
+    ChatReplyConfig,
+    ChatSessionStreamChunk,
+    Engine,
+    EngineConfig,
+)
+
+async def main():
+    print("Creating EngineConfig and Engine...")
+    engine = await Engine.create(EngineConfig.create())
+
+    print("Locating model trymirai/Qwen3.5-4B-M...")
+    model = await engine.model("trymirai/Qwen3.5-4B-M")
+    if model is None:
+        raise RuntimeError("Model trymirai/Qwen3.5-4B-M not found")
+
+    print("Downloading / Verifying cached model weights (in ~/.cache/mirai)...")
+    downloader = await engine.download(model)
+    async for update in downloader.iterator():
+        pct = int(update.progress * 100)
+        if pct % 20 == 0:
+            print(f"Progress: {pct}%")
+
+    print("\nStarting Chat Session with C Vulnerability Analysis prompt...")
+    session = await engine.chat(model, ChatConfig.create())
+
+    test_prompt = """
+Analyze the following C function for security vulnerabilities:
+void process_packet(char *data, int len) {
+    char buffer[64];
+    if (len > 0) {
+        strcpy(buffer, data);
+    }
+}
+Identify the vulnerability, source anchor, and sink anchor. Keep your response brief.
+"""
+    messages = [
+        ChatMessage.system().with_text("You are an expert security auditor and formal verification debater."),
+        ChatMessage.user().with_text(test_prompt.strip()),
+    ]
+
+    t_start = time.time()
+    stream = await session.reply_with_stream(messages, ChatReplyConfig.create())
+    output_tokens = 0
+    full_text = []
+
+    async for chunk in stream.iterator():
+        if isinstance(chunk, ChatSessionStreamChunk.Replies):
+            for reply in chunk.replies:
+                if reply.message and reply.message.text:
+                    full_text.append(reply.message.text)
+                if hasattr(reply, "stats") and reply.stats:
+                    output_tokens = getattr(reply.stats, "tokens_count_output", output_tokens)
+        elif isinstance(chunk, ChatSessionStreamChunk.Error):
+            print(f"Stream error: {chunk.error}")
+
+    elapsed = time.time() - t_start
+    print("\n--- MODEL RESPONSE ---")
+    print("".join(full_text))
+    print("----------------------")
+    print(f"Elapsed: {elapsed:.3f}s")
+    if output_tokens > 0:
+        print(f"Output tokens: {output_tokens}")
+        print(f"Throughput: {output_tokens / elapsed:.1f} tokens/sec")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+#### 3. Run the Verification Command
+```bash
+.venv-uzu/bin/python scripts/test_uzu_qwen.py
+```
+*(Pre-downloaded 2.3 GB checkpoint is stored at `~/.cache/mirai/models/mirai/alibaba-qwen3.5-4b-mirai-mirai-m-4/` and will be loaded directly into Metal GPU unified memory.)*
+
+
+---
+
+### Pilot 10-Seed Debate Benchmark (LM Studio Gemma 12B QAT + Gemini 3.8 Flash Judge)
+
+**Prerequisites:** LM Studio running locally with `google/gemma-4-12b-qat` loaded, Vertex AI credentials configured.
+
+#### Step 1: Start the Debate Stack (LM Studio Debater + Gemini Flash Judge)
+
+```bash
+OPENAI_API_BASE="http://localhost:1234/v1" \
+OPENAI_API_KEY="lm-studio" \
+DEBATER_MODEL="openai/google/gemma-4-12b-qat" \
+GENERATOR_MODEL="openai/google/gemma-4-12b-qat" \
+VERIFIER_MODEL="openai/google/gemma-4-12b-qat" \
+JUDGE_MODEL="openai/google/gemma-4-12b-qat" \
+./scenarios/debate/start_stack.sh
+```
+
+
+uv run python scenarios/debate/run_batch.py \
+  --seeds scenarios/debate/cve_seeds_smoke_2.jsonl \
+  --run-id gemma-smoke-armA-raw-noesc \
+  --output artifacts/factorial/corpus_armA_gemma_smoke.jsonl \
+  --attempts-out artifacts/attempts/gemma-smoke-armA.jsonl \
+  --manifest-out artifacts/runs/gemma-smoke-armA/batch_manifest.json \
+  --seed 42 \
+  --mode record \
+  --no-slice-judge \
+  --no-reflector \
+  --no-escalate-pareto \
+  --max-concurrency 1 \
+  --counter-evidence-validation-mode enforce_deterministic
+
+
+#### Step 2: Run the 10-Seed Pilot Batch (in a second terminal)
+
+```bash
+OPENAI_API_BASE="http://localhost:1234/v1" \
+OPENAI_API_KEY="lm-studio" \
+DEBATER_MODEL="openai/google/gemma-4-12b-qat" \
+VERIFIER_MODEL="openai/google/gemma-4-12b-qat" \
+JUDGE_MODEL="vertex_ai/gemini-3.8-flash" \
+uv run python scenarios/debate/run_batch.py \
+  --seeds scenarios/debate/cve_seeds_pilot_10.jsonl \
+  --run-id lmstudio-gemma12b-pilot-10 \
+  --output test_corpus_lmstudio_gemma12b_pilot_10.jsonl \
+  --attempts-out artifacts/attempts/lmstudio-gemma12b-pilot-10.jsonl \
+  --manifest-out artifacts/runs/lmstudio-gemma12b-pilot-10/batch_manifest.json \
+  --cassette-path artifacts/cassettes/lmstudio-gemma12b-pilot-10.json \
+  --gepa-dir artifacts/gepa_lmstudio_pilot_10 \
+  --seed 42 \
+  --mode record \
+  --escalate-pareto \
+  --reflector \
+  --reflector-in-process \
+  --reflector-mode symmetric \
+  --slice-judge \
+  --max-concurrency 1 \
+  --counter-evidence-validation-mode enforce_deterministic \
+  --resume
+```
+
+### Option B: Qwen 3.5 4B via Uzu Proxy (Metal-Accelerated, ~80 tok/s)
+
+We built an OpenAI-compatible FastAPI proxy ([`scripts/uzu_proxy.py`](file:///Users/surfiniaburger/Desktop/modular-metacog-swarm-v3/agent_training/silver-one/scripts/uzu_proxy.py)) wrapping Uzu's native Metal SDK with support for `/v1/chat/completions` (streaming & non-streaming) and `/v1/models`.
+
+**1. Start the Uzu Proxy (Terminal 0):**
+```bash
+./scripts/start_uzu_proxy.sh
+# Runs on http://localhost:8000 serving trymirai/Qwen3.5-4B-M
+```
+
+**2. Start the Debate Stack (Debater/Verifier: Uzu Qwen | Judge: LM Studio Gemma 12B) (Terminal 1):**
+```bash
+./scenarios/debate/start_uzu_gemma_stack.sh
+```
+*(This automatically exports `DEBATER_MODEL` & `VERIFIER_MODEL` to `openai/trymirai/Qwen3.5-4B-M` on `localhost:8000` and `JUDGE_MODEL` to `openai/google/gemma-4-12b-qat` on `localhost:1234`)*
+
+
+**3. Run the Benchmark Batch (Terminal 2):**
+```bash
+uv run python scenarios/debate/run_batch.py \
+  --seeds scenarios/debate/cve_seeds_pilot_10.jsonl \
+  --run-id uzu-qwen-gemma12b-pilot-10 \
+  --output test_corpus_uzu_qwen_gemma12b_pilot_10.jsonl \
+  --attempts-out artifacts/attempts/uzu-qwen-gemma12b-pilot-10.jsonl \
+  --manifest-out artifacts/runs/uzu-qwen-gemma12b-pilot-10/batch_manifest.json \
+  --cassette-path artifacts/cassettes/uzu-qwen-gemma12b-pilot-10.json \
+  --gepa-dir artifacts/gepa_uzu_qwen_pilot_10 \
+  --seed 42 \
+  --mode record \
+  --escalate-pareto \
+  --reflector \
+  --reflector-in-process \
+  --reflector-mode symmetric \
+  --slice-judge \
+  --max-concurrency 1 \
+  --counter-evidence-validation-mode enforce_deterministic
+```
+
+### Option C: All-Qwen 3.5 4B via Uzu Proxy (Debater + Verifier + Judge)
+
+To run **all roles** (Debater, Verifier, and Judge) fully accelerated locally via Uzu on Apple Silicon Metal:
+
+**1. Start the Uzu Proxy (Terminal 0):**
+```bash
+./scripts/start_uzu_proxy.sh
+```
+
+**2. Start the All-Qwen Debate Stack (Terminal 1):**
+```bash
+./scenarios/debate/start_all_qwen_stack.sh
+```
+
+**3. Run the Benchmark Batch (Terminal 2):**
+```bash
+uv run python scenarios/debate/run_batch.py \
+  --seeds scenarios/debate/cve_seeds_pilot_10.jsonl \
+  --run-id uzu-all-qwen-pilot-101 \
+  --output test_corpus_uzu_all_qwen_pilot_101.jsonl \
+  --attempts-out artifacts/attempts/uzu-all-qwen-pilot-101.jsonl \
+  --manifest-out artifacts/runs/uzu-all-qwen-pilot-101/batch_manifest.json \
+  --cassette-path artifacts/cassettes/uzu-all-qwen-pilot-101.json \
+  --gepa-dir artifacts/gepa_uzu_all_qwen_pilot_101 \
+  --seed 42 \
+  --mode record \
+  --escalate-pareto \
+  --reflector \
+  --reflector-in-process \
+  --reflector-mode symmetric \
+  --slice-judge \
+  --max-concurrency 1 \
+  --counter-evidence-validation-mode enforce_deterministic \
+  --resume
+```
+
+
+
+uv run python scenarios/debate/run_batch.py \
+  --seeds scenarios/debate/cve_seeds_benchmark_50.jsonl \
+  --run-id track2-gemm-armA-raw-noesc-rep1 \
+  --output test_corpus_track2_gemm_armA_rep1.jsonl \
+  --attempts-out artifacts/attempts/track2-gemm-armA-rep1.jsonl \
+  --manifest-out artifacts/runs/track2-gemm-armA-rep1/batch_manifest.json \
+  --seed 42 \
+  --mode record \
+  --no-slice-judge \
+  --no-reflector \
+  --no-escalate-pareto \
+  --max-concurrency 1 \
+  --counter-evidence-validation-mode enforce_deterministic
+
+
+
+SEND_MESSAGE_TIMEOUT=1800 uv run python scenarios/debate/run_batch.py \
+  --seeds scenarios/debate/cve_seeds_smoke_2.jsonl \
+  --run-id ql-smoke-armA-raw-noesc \
+  --output artifacts/factorial/corpus_armA_ql_smoke.jsonl \
+  --attempts-out artifacts/attempts/ql-smoke-armA.jsonl \
+  --manifest-out artifacts/runs/ql-smoke-armA/batch_manifest.json \
+  --seed 42 \
+  --mode record \
+  --no-slice-judge \
+  --no-reflector \
+  --no-escalate-pareto \
+  --max-concurrency 1 \
+  --counter-evidence-validation-mode enforce_deterministic
+
+
+uv run python scenarios/debate/run_batch.py \
+  --seeds scenarios/debate/cve_seeds_smoke_2.jsonl \
+  --run-id ql-smoke-armB-struct-noesc \
+  --output artifacts/factorial/corpus_armB_ql_smoke.jsonl \
+  --attempts-out artifacts/attempts/ql-smoke-armB.jsonl \
+  --manifest-out artifacts/runs/ql-smoke-armB/batch_manifest.json \
+  --gepa-dir artifacts/gepa_ql_pareto_smoke \
+  --seed 42 \
+  --mode record \
+  --slice-judge \
+  --reflector \
+  --reflector-in-process \
+  --reflector-mode symmetric \
+  --no-escalate-pareto \
+  --max-concurrency 1 \
+  --counter-evidence-validation-mode enforce_deterministic
+
+
+
+
+uv run python scenarios/debate/run_batch.py \
+  --seeds scenarios/debate/cve_seeds_smoke_2.jsonl \
+  --run-id ql-smoke-armC-struct-esc \
+  --output artifacts/factorial/corpus_armC_ql_smoke.jsonl \
+  --attempts-out artifacts/attempts/ql-smoke-armC.jsonl \
+  --manifest-out artifacts/runs/ql-smoke-armC/batch_manifest.json \
+  --gepa-dir artifacts/gepa_ql_pareto_smoke \
+  --seed 42 \
+  --mode record \
+  --slice-judge \
+  --reflector \
+  --reflector-in-process \
+  --reflector-mode symmetric \
+  --escalate-pareto \
+  --max-concurrency 1 \
+  --counter-evidence-validation-mode enforce_deterministic \
+  --halt-on-con-win
+
+
+uv run python scenarios/debate/run_batch.py \
+  --seeds scenarios/debate/cve_seeds_smoke_2.jsonl \
+  --run-id ql-smoke-armD-raw-esc \
+  --output artifacts/factorial/corpus_armD_ql_smoke.jsonl \
+  --attempts-out artifacts/attempts/ql-smoke-armD.jsonl \
+  --manifest-out artifacts/runs/ql-smoke-armD/batch_manifest.json \
+  --gepa-dir artifacts/gepa_ql_pareto_smoke \
+  --seed 42 \
+  --mode record \
+  --no-slice-judge \
+  --no-reflector \
+  --escalate-pareto \
+  --max-concurrency 1 \
+  --counter-evidence-validation-mode enforce_deterministic

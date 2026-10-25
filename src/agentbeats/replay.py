@@ -12,6 +12,13 @@ import logging
 # imported (useful for tests that mock the provider).
 try:
     import litellm  # type: ignore
+    import litellm.constants  # type: ignore
+    import litellm.utils  # type: ignore
+    litellm.num_retries = int(os.getenv("LITELLM_NUM_RETRIES", "6"))
+    litellm.constants.INITIAL_RETRY_DELAY = float(os.getenv("INITIAL_RETRY_DELAY", "5.0"))
+    litellm.utils.INITIAL_RETRY_DELAY = float(os.getenv("INITIAL_RETRY_DELAY", "5.0"))
+    litellm.constants.MAX_RETRY_DELAY = float(os.getenv("MAX_RETRY_DELAY", "60.0"))
+    litellm.utils.MAX_RETRY_DELAY = float(os.getenv("MAX_RETRY_DELAY", "60.0"))
 except Exception:  # pragma: no cover – the library may be absent in some environments
     litellm = None  # type: ignore
 
@@ -47,6 +54,7 @@ GEMMA4_OLLAMA_SAMPLING_CONFIG = {
 }
 
 GENERATION_PARAM_KEYS = {"temperature", "top_p", "top_k", "max_tokens"}
+GEMINI_3_UNSUPPORTED_PARAM_KEYS = {"temperature", "top_p", "top_k"}
 
 class LLMCassette:
     """Records and replays LLM responses based on full prompt/param hashes."""
@@ -93,7 +101,21 @@ class LLMCassette:
         # Always reload before reading in case another process updated it
         self.load()
         h = self._hash(model, messages, params)
-        return self.data.get(h)
+        if h in self.data:
+            return self.data.get(h)
+
+        # Legacy fallback: preserve lookup of entries recorded with temperature, top_p, or top_k
+        for candidate_updates in (
+            {"temperature": 1.0, "top_p": 0.95},
+            {"temperature": 1.0, "top_p": 0.95, "top_k": 64},
+        ):
+            legacy_params = dict(params)
+            legacy_params.update({k: v for k, v in candidate_updates.items() if k not in legacy_params})
+            h_legacy = self._hash(model, messages, legacy_params)
+            if h_legacy in self.data:
+                return self.data.get(h_legacy)
+
+        return None
 
     def save_response(self, model: str, messages: list, params: Dict[str, Any], response: Any):
         if self.mode != "record":
@@ -524,6 +546,40 @@ class ReplayManager:
     def _apply_generation_config(self, model: str, kwargs: Dict[str, Any]) -> None:
         for key, value in self.effective_generation_config(model).items():
             kwargs.setdefault(key, value)
+        self._normalize_provider_kwargs(model, kwargs)
+
+    @staticmethod
+    def _is_gemini_model(model: str) -> bool:
+        model_lower = str(model).lower()
+        return "gemini" in model_lower and model_lower.startswith(
+            ("vertex_ai/", "gemini/")
+        )
+
+    @classmethod
+    def _is_gemini_3_model(cls, model: str) -> bool:
+        model_lower = str(model).lower()
+        return cls._is_gemini_model(model) and (
+            "gemini-3." in model_lower or "gemini-3-" in model_lower
+        )
+
+    @classmethod
+    def _normalize_provider_kwargs(cls, model: str, kwargs: Dict[str, Any]) -> None:
+        if not cls._is_gemini_model(model):
+            return
+        options = kwargs.get("options")
+        if isinstance(options, dict):
+            filtered_options = {
+                key: value
+                for key, value in options.items()
+                if key not in {"keep_alive"}
+            }
+            if filtered_options:
+                kwargs["options"] = filtered_options
+            else:
+                kwargs.pop("options", None)
+        if cls._is_gemini_3_model(model):
+            for key in GEMINI_3_UNSUPPORTED_PARAM_KEYS:
+                kwargs.pop(key, None)
 
     def save_record(self, path: str):
         """Persist the RunRecord (A1)."""
@@ -595,12 +651,14 @@ class ReplayManager:
                 span.attributes.update({"source": "replay_miss", "cache_hit": False})
                 raise OfflineReplayError(f"Offline Replay Error: No cached response for {model} with hash {self.cassette._hash(model, messages, kwargs)}")
 
-            # Make real call with increased timeout
-            kwargs.setdefault("timeout", 1200)
+            # Make real call - use env-controlled timeout (default 120s for local inference)
+            call_kwargs = dict(kwargs)
+            call_kwargs.setdefault("timeout", float(os.getenv("LITELLM_REQUEST_TIMEOUT", "120")))
+            call_kwargs.setdefault("num_retries", int(os.getenv("LITELLM_NUM_RETRIES", "3")))
             if litellm is None:
                 span.attributes.update({"source": "provider", "cache_hit": False})
                 raise RuntimeError("litellm is not available in this environment; cannot perform live completion")
-            response = await litellm.acompletion(model=model, messages=messages, **kwargs)
+            response = await litellm.acompletion(model=model, messages=messages, **call_kwargs)
             duration_ms = (time.perf_counter() - start_perf) * 1000.0
 
             # Save full response

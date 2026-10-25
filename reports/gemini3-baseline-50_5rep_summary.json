@@ -1,0 +1,80 @@
+{
+  "run_prefix": "gemini3-baseline-50",
+  "n_reps": 5,
+  "mean_accepted": 28,
+  "std_accepted": 1.581,
+  "mean_vuln_accepted": 23,
+  "std_vuln_accepted": 1.0,
+  "mean_safe_accepted": 5,
+  "std_safe_accepted": 1.581,
+  "mean_r0_pass": 22.4,
+  "mean_r1_recovery": 5.6,
+  "mean_logic_errors_caught": 41.8,
+  "mean_total_cost_usd": 0.0,
+  "std_total_cost_usd": 0.0,
+  "cost_per_accepted_row_usd": 0.0,
+  "mean_total_tokens": 0,
+  "tokens_per_accepted_row": 0,
+  "per_rep": [
+    {
+      "accepted": 28,
+      "vuln_accepted": 22,
+      "safe_accepted": 6,
+      "r0_pass": 23,
+      "r1_recovery": 5,
+      "r0_failures": 27,
+      "logic_errors_caught": 43,
+      "total_attempts": 77,
+      "total_cost": 0.0,
+      "total_tokens": 0
+    },
+    {
+      "accepted": 30,
+      "vuln_accepted": 23,
+      "safe_accepted": 7,
+      "r0_pass": 24,
+      "r1_recovery": 6,
+      "r0_failures": 26,
+      "logic_errors_caught": 38,
+      "total_attempts": 77,
+      "total_cost": 0.0,
+      "total_tokens": 0
+    },
+    {
+      "accepted": 26,
+      "vuln_accepted": 22,
+      "safe_accepted": 4,
+      "r0_pass": 21,
+      "r1_recovery": 5,
+      "r0_failures": 29,
+      "logic_errors_caught": 45,
+      "total_attempts": 79,
+      "total_cost": 0.0,
+      "total_tokens": 0
+    },
+    {
+      "accepted": 27,
+      "vuln_accepted": 24,
+      "safe_accepted": 3,
+      "r0_pass": 22,
+      "r1_recovery": 5,
+      "r0_failures": 28,
+      "logic_errors_caught": 41,
+      "total_attempts": 78,
+      "total_cost": 0.0,
+      "total_tokens": 0
+    },
+    {
+      "accepted": 29,
+      "vuln_accepted": 24,
+      "safe_accepted": 5,
+      "r0_pass": 22,
+      "r1_recovery": 7,
+      "r0_failures": 28,
+      "logic_errors_caught": 42,
+      "total_attempts": 78,
+      "total_cost": 0.0,
+      "total_tokens": 0
+    }
+  ]
+}

@@ -28,6 +28,16 @@ from agentbeats.structured_output import call_structured
 from adk_debate_judge import _predicate_quality  # type: ignore
 from offline_b_gate import _is_generic_anchor  # type: ignore
 
+os.environ.setdefault("VERTEXAI_LOCATION", "global")
+if not os.environ.get("VERTEXAI_PROJECT"):
+    try:
+        import subprocess
+        _proj = subprocess.check_output(["gcloud", "config", "get-value", "project"], text=True, stderr=subprocess.DEVNULL).strip()
+        if _proj:
+            os.environ["VERTEXAI_PROJECT"] = _proj
+    except Exception:
+        pass
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("cve_seed_loader")
 
@@ -71,12 +81,13 @@ def _iter_source_rows(csv_path: str) -> Iterator[Dict[str, str]]:
     """Lazily stream rows from a CSV file without materializing the whole file in memory."""
     import sys
     csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
-    if not os.path.exists(csv_path):
+    resolved = CVESeedLoader._resolve_path(csv_path) if csv_path else ""
+    if not resolved or not os.path.exists(resolved):
+        logger.error("Source CSV file not found: %s (resolved: %s)", csv_path, resolved)
         return
-    with open(csv_path, 'r', encoding='utf-8', errors='ignore') as f:
+    with open(resolved, 'r', encoding='utf-8', errors='ignore') as f:
         reader = csv.DictReader(f)
-        for row in reader:
-            yield row
+        yield from reader
 
 
 def _get_matching_source_candidates(csv_path: str, target_lang: str) -> Iterator[Tuple[str, str, Any]]:
@@ -112,6 +123,9 @@ class SeedExpansionConfig:
     telemetry_path: Optional[str] = None
     attempts_path: Optional[str] = None
     purge_invalid_existing: bool = True
+    audit_predicates: bool = False
+    auditor_model: str = "vertex_ai/gemini-3.8-flash"
+    strict_audit: bool = False
 
     @classmethod
     def from_args(
@@ -273,14 +287,20 @@ class CVESeedLoader:
 
     @staticmethod
     def _resolve_path(path: str) -> str:
-        """Resolve path directly or relative to project_root if not found."""
+        """Resolve path directly, relative to project_root, or in parent directories."""
         if not path:
             return path
         if os.path.exists(path):
-            return path
-        project_candidate = os.path.join(project_root, path)
-        if os.path.exists(project_candidate):
-            return project_candidate
+            return os.path.abspath(path)
+        candidates = [
+            os.path.join(project_root, path),
+            os.path.join(project_root, "..", path),
+            os.path.join(project_root, "../..", path),
+            os.path.join(project_root, "kaggle_notebooks", "kaggle_notebooks", os.path.basename(path)),
+        ]
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return os.path.abspath(candidate)
         return path
 
     def _normalize_code(self, code: str) -> str:
@@ -636,6 +656,38 @@ Return a JSON object:
         state.total_tokens_est += est_tokens
 
         is_valid, reasons, anchors = self.validate_predicate(predicate, code, gepa_info)
+
+        if is_valid and config.audit_predicates:
+            try:
+                from audit_predicates import audit_predicate
+                audit_res = await audit_predicate(
+                    code=code,
+                    predicate=predicate,
+                    original_safety=str(safety),
+                    gepa_info=gepa_info,
+                    language=lang,
+                    model=config.auditor_model,
+                    replay_manager=self.replay_manager,
+                )
+                if not audit_res.is_sound:
+                    is_valid = False
+                    reasons.append(f"audit_rejected_{audit_res.category.value}")
+                    logger.info(
+                        f"[Audit Reject] Predicate failed semantic audit: "
+                        f"{audit_res.category.value} | {audit_res.semantic_flaw_analysis[:100]}..."
+                    )
+                else:
+                    gepa_info["audit"] = audit_res.model_dump()
+            except Exception as e:
+                mode = getattr(getattr(self.replay_manager, "cassette", None), "mode", "record")
+                if mode == "replay":
+                    logger.exception("Phase C semantic predicate audit failed in replay mode: %s", e)
+                    raise
+                logger.warning(f"Phase C semantic predicate audit error: {e}")
+                if config.strict_audit:
+                    is_valid = False
+                    reasons.append("audit_execution_failed")
+
         state.record_attempt(predicate, len(code), is_valid, reasons, anchors)
 
         if is_valid:
@@ -682,8 +734,11 @@ Return a JSON object:
         state: SeedExpansionState,
     ) -> None:
         """Stream candidates from source CSV lazily and process until target is met or stop rule triggers."""
-        logger.info(f"Streaming candidates from {self.source_csv_path}...")
-        candidate_iter = _get_matching_source_candidates(self.source_csv_path, config.target_lang)
+        resolved_source = self._resolve_path(self.source_csv_path)
+        if not os.path.exists(resolved_source):
+            raise FileNotFoundError(f"Source CSV file not found: {self.source_csv_path} (resolved: {resolved_source})")
+        logger.info(f"Streaming candidates from {resolved_source}...")
+        candidate_iter = _get_matching_source_candidates(resolved_source, config.target_lang)
         while True:
             batch = await asyncio.to_thread(_load_candidate_batch, candidate_iter, 50)
             if not batch:
@@ -801,9 +856,12 @@ async def main():
     parser.add_argument("--window-size", type=int, default=50, help="Rolling window size for marginal yield calculation")
     parser.add_argument("--max-calls", type=int, default=1500, help="Maximum LLM API calls before halting")
     parser.add_argument("--max-tokens", type=int, default=6000000, help="Maximum token budget before halting")
-    parser.add_argument("--telemetry-out", default="artifacts/telemetry/seed_expansion_summary.json", help="Path to write expansion telemetry JSON")
-    parser.add_argument("--attempts-out", default="artifacts/attempts/seed_expansion_attempts.jsonl", help="Path to write append-only attempts JSONL")
+    parser.add_argument("--telemetry-out", "--telemetry-path", default="artifacts/telemetry/seed_expansion_summary.json", help="Path to write expansion telemetry JSON")
+    parser.add_argument("--attempts-out", "--attempts-path", default="artifacts/attempts/seed_expansion_attempts.jsonl", help="Path to write append-only attempts JSONL")
     parser.add_argument("--no-purge-invalid", dest="purge_invalid", action="store_false", default=True, help="Disable purging invalid baseline seeds")
+    parser.add_argument("--audit-predicates", action="store_true", default=False, help="Perform Phase C semantic predicate audit before accepting seeds")
+    parser.add_argument("--auditor-model", default="vertex_ai/gemini-3.8-flash", help="Auditor model for Phase C semantic predicate validation")
+    parser.add_argument("--strict-audit", action="store_true", default=False, help="Reject seed if auditor model call fails")
     args = parser.parse_args()
 
     replay_mgr = ReplayManager.from_config(args.run_id, args.seed, args.cassette, args.mode)
@@ -829,6 +887,9 @@ async def main():
             telemetry_path=args.telemetry_out,
             attempts_path=args.attempts_out,
             purge_invalid_existing=args.purge_invalid,
+            audit_predicates=args.audit_predicates,
+            auditor_model=args.auditor_model,
+            strict_audit=args.strict_audit,
         )
         await loader.expand_seeds(config)
     else:

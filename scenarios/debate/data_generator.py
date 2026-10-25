@@ -38,6 +38,14 @@ class BarredDataGenerator:
             ],
             "options": {"keep_alive": "24h"},
         }
+        explicit_api_base = os.getenv("GENERATOR_API_BASE")
+        gen_api_base = explicit_api_base or (os.getenv("OPENAI_API_BASE") if self.model.startswith("openai/") else None)
+        if gen_api_base:
+            kwargs["api_base"] = gen_api_base
+        explicit_api_key = os.getenv("GENERATOR_API_KEY")
+        gen_api_key = explicit_api_key or (os.getenv("OPENAI_API_KEY") if self.model.startswith("openai/") else None)
+        if gen_api_key:
+            kwargs["api_key"] = gen_api_key
         if response_format:
             kwargs["response_format"] = response_format
             

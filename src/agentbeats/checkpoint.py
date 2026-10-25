@@ -2,7 +2,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict
 
 from agentbeats.clock import RunClock
 
@@ -11,7 +11,7 @@ class CheckpointError(RuntimeError):
     pass
 
 
-def _validate_path(path: Union[str, Path], base_dir: Optional[Union[str, Path]] = None) -> Path:
+def _validate_path(path: str | Path, base_dir: str | Path | None = None) -> Path:
     """Validate and canonicalize file path to prevent path traversal vulnerability (CWE-22)."""
     if not path:
         raise CheckpointError("Invalid file path: path must be a non-empty string or Path.")
@@ -28,7 +28,7 @@ def _validate_path(path: Union[str, Path], base_dir: Optional[Union[str, Path]] 
     return resolved_path
 
 
-def save_checkpoint(path: Union[str, Path], payload: Dict[str, Any], *, clock_now: Optional[str] = None, base_dir: Optional[Union[str, Path]] = None) -> None:
+def save_checkpoint(path: str | Path, payload: Dict[str, Any], *, clock_now: str | None = None, base_dir: str | Path | None = None) -> None:
     valid_path = _validate_path(path, base_dir=base_dir)
     target_dir = valid_path.parent
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -37,7 +37,7 @@ def save_checkpoint(path: Union[str, Path], payload: Dict[str, Any], *, clock_no
     data.setdefault("schema_version", 1)
     data["updated_at"] = RunClock.from_value(clock_now).now_iso()
 
-    tempname: Optional[str] = None
+    tempname: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -59,7 +59,7 @@ def save_checkpoint(path: Union[str, Path], payload: Dict[str, Any], *, clock_no
                 pass
 
 
-def load_checkpoint(path: Union[str, Path], base_dir: Optional[Union[str, Path]] = None) -> Optional[Dict[str, Any]]:
+def load_checkpoint(path: str | Path, base_dir: str | Path | None = None) -> Dict[str, Any] | None:
     valid_path = _validate_path(path, base_dir=base_dir)
     try:
         with open(valid_path, "r", encoding="utf-8") as f:

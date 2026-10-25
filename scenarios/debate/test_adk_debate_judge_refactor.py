@@ -360,7 +360,7 @@ def test_resolve_target_verdict_polarities():
 
 
 @pytest.mark.asyncio
-async def test_con_win_counter_evidence_acceptance():
+async def test_con_win_validated_receipt_acceptance():
     with tempfile.TemporaryDirectory() as td:
         req = EvalRequest(
             participants={"pro_debater": "http://localhost:9001", "con_debater": "http://localhost:9002"},
@@ -396,6 +396,7 @@ async def test_con_win_counter_evidence_acceptance():
         normalized_anchors = ["len < max_len", "char buf[10];"]
         soft_checks = {
             "con_win_counter_evidence": {"pass": True, "applicable": True},
+            "counter_evidence_validation": {"status": "deterministically_confirmed"},
         }
 
         updater = MagicMock()
@@ -418,6 +419,61 @@ async def test_con_win_counter_evidence_acceptance():
         assert is_valid is True
         assert report is None
         assert meta["error"] == "validated_con_counter_evidence"
+        judge._restore_or_call_verifier.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_con_win_gate_only_does_not_accept():
+    """Regression: a Con win with only a passing gate (no valid receipt) must NOT be accepted."""
+    with tempfile.TemporaryDirectory() as td:
+        req = EvalRequest(
+            participants={"pro_debater": "http://localhost:9001", "con_debater": "http://localhost:9002"},
+            config={
+                "run_id": "test-con-win-gate-only",
+                "seed": 42,
+                "mode": "passthrough",
+                "topic": "test",
+                "predicate": "Vulnerable to heap overflow",
+                "target_verdict": "True",
+                "record_path": os.path.join(td, "run.json"),
+                "attempts_path": os.path.join(td, "attempts.jsonl"),
+            },
+        )
+        judge = DebateJudgeADK()
+        ctx = _EvalContext(req, judge)
+
+        pro = DebaterScore(technical_accuracy=0.3, logic_soundness=0.3, evidence_strength=0.3, total_score=0.3, critique="Pro argued")
+        con = DebaterScore(technical_accuracy=0.9, logic_soundness=0.9, evidence_strength=0.9, total_score=0.9, critique="Con proved bounds check")
+        debate_eval = DebateEval(
+            thinking_process="Thinking...",
+            predicate="Vulnerable to heap overflow",
+            anchors=["len < max_len", "char buf[10];"],
+            winner="con_debater",
+            reason="Code contains a strict bounds check preventing overflow on len < max_len.",
+            mechanism="bounds check guard anchor: len < max_len",
+            counterfactual="If len check removed",
+            support_level="supported",
+            verifier_report="Passed",
+            pro_debater=pro,
+            con_debater=con,
+        )
+        normalized_anchors = ["len < max_len", "char buf[10];"]
+        soft_checks = {
+            "con_win_counter_evidence": {"pass": True, "applicable": True},
+            # no counter_evidence_validation receipt
+        }
+
+        updater = MagicMock()
+        updater.update_status = AsyncMock()
+
+        judge._restore_or_call_verifier = AsyncMock()
+
+        is_valid, report, meta, reason = await judge._process_verifier_audit(
+            ctx, 0, debate_eval, "char buf[10];", normalized_anchors, soft_checks, {}, {}, None, "start", updater
+        )
+
+        assert is_valid is False
+        assert meta["error"] != "validated_con_counter_evidence"
         judge._restore_or_call_verifier.assert_not_called()
 
 
