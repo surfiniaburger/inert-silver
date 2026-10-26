@@ -31,7 +31,7 @@ Rules:
 - `outcome=con_win` requires a non-null `con_candidate_id`.
 - `con_candidate_id` must be one of the server-generated candidates for that exact code slice and seed.
 - `outcome=pro_win` has no Con candidate.
-- `outcome=unresolved` is required when the code/predicate is outside the currently supported deterministic proof domain.
+- `outcome=unresolved` is required when the code/predicate is outside the currently supported deterministic proof domain. Use a dedicated `unresolved_reason` field to distinguish unsupported proof domains (`unsupported_proof_domain`) from ordinary inconclusive runs (`inconclusive`). Downstream metrics must treat these as distinct categories.
 - The model never supplies guard anchors, operation anchors, value relations, enforcement, or a defense kind for a Con result. It selects an ID only.
 - The runtime reconstructs the receipt from the selected immutable candidate, then validates it.
 
@@ -52,6 +52,8 @@ CandidateReceipt(
     operation_value="len",
     enforcement="reject_before_operation",
     value_relation="guarded_value_equals_operation_value",
+    bound_relation="guarded_value_less_than_or_equal_capacity",
+    capacity_relation="capacity_is_size_of_destination",
     proof_capability="deterministic_v1",
 )
 ```
@@ -111,6 +113,7 @@ Change seed metadata to carry an explicit reviewed contract, for example:
   "seed_id": "barred-0047",
   "predicate": "...",
   "defense_contract": {
+    "version": "v1",
     "kind": "upper_bound",
     "operation_class": "memory_copy",
     "eligibility": "supported_v1"
@@ -131,7 +134,7 @@ or:
 }
 ```
 
-No reviewed contract means `unresolved`, not an inferred obligation.
+No reviewed contract means `unresolved`, not an inferred obligation. The runtime must return `unresolved` for missing or unsupported contracts **before** evaluating the legacy `con_win_gate`. An unsupported seed must never become a Con win through the legacy gate.
 
 This also fixes the current mismatch between the smoke result narrative and the actual run's seed predicates.
 
@@ -195,11 +198,11 @@ If no listed candidate proves the defense, return outcome="unresolved".
 Then include one or two concise examples inside the system prompt:
 
 ```json
-{"outcome":"con_win","con_candidate_id":"C1","anchors":["...","..."]}
+{"outcome":"con_win","con_candidate_id":"C1"}
 ```
 
 ```json
-{"outcome":"unresolved","con_candidate_id":null,"anchors":["...","..."]}
+{"outcome":"unresolved","con_candidate_id":null}
 ```
 
 The examples are useful for Qwen protocol compliance, but correctness remains in the candidate resolver and validator.
@@ -268,6 +271,7 @@ For each enabled family, include:
 |---|---|
 | Guard dominates a recognized sink and protects same value | `deterministically_confirmed` |
 | Guard occurs after operation | rejected/refuted |
+| Negative length (len < 0) | rejected/refuted |
 | Guard checks a different value | rejected/refuted |
 | Operation is an unknown wrapper | unsupported/unresolved |
 | Model selects non-existent candidate | invalid contract |
@@ -279,6 +283,7 @@ Use this controlled fixture:
 
 ```c
 void f(char *dst, char *src, int len, int cap) {
+    if (len < 0) return;
     if (len > cap) return;
     memcpy(dst, src, len);
 }
@@ -330,7 +335,7 @@ It should not be "the funnel has more Con wins." A larger Con count without that
 
 ## What this does NOT change
 
-- The halt-on-con-win flag (`--halt-on-con-win`) stays as implemented. It halts on any Con win, but the *policy decision* of when to halt should be gated on `deterministically_confirmed` receipts, not raw Con wins. Until Step 10 is complete, treat halt-on-con-win as an engineering mechanism, not a measured policy.
+- The halt-on-con-win flag (`--halt-on-con-win`) stays as implemented. It halts on any Con win, including a Con win without a `deterministically_confirmed` receipt. This is an explicit exception to "No invalid receipt can halt" until the flag consumes only validated outcomes. Until Step 10 is complete, treat halt-on-con-win as an engineering mechanism, not a measured policy.
 - The Track 2 experiment spec (four-arm factorial) is unchanged.
 - The Track 1 audit ledger is unchanged.
 - The canonical adjudication ledger is unchanged.
