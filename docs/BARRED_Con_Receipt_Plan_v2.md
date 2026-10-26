@@ -302,6 +302,56 @@ Expected execution:
 
 Then run the negative fixture where `memcpy` occurs before the guard. The extractor must produce no valid selectable candidate, and a model's attempted Con must end as `unresolved`, never accepted.
 
+## 10.5 Pre-broad-smoke acceptance gate (mandatory)
+
+Do not run another 10-seed model smoke until this two-seed fresh smoke passes.
+
+### Preconditions
+
+- Parser preflight passes.
+- Candidate-selection prompt contract version is recorded.
+- Runtime records candidate list, selected ID, resolved receipt, and validator result.
+- Free-text `counter_evidence` is disabled outside explicitly labelled legacy replay.
+
+### Seed A: supported deterministic receipt
+
+Use a reviewed `upper_bound` fixture with a recognized sink:
+
+```c
+if (len > cap) return;
+memcpy(dst, src, len);
+```
+
+Expected:
+- extractor emits `C1`;
+- model can return `outcome=con_win, con_candidate_id=C1`;
+- runtime resolves C1 locally;
+- validator emits `deterministically_confirmed`;
+- `--halt-on-con-win` records `con_win_defended`;
+- no model-authored receipt fields influence the result.
+
+### Seed B: unsupported proof domain
+
+Use a wrapper operation whose semantics are not implemented.
+
+Expected:
+- extractor exposes no selectable deterministic candidate;
+- model is instructed to return `outcome=unresolved`;
+- runtime records `unresolved_no_valid_receipt`;
+- no verifier, Con halt, training export, or fallback Pro acceptance occurs.
+
+### Pass criteria
+
+- one locally confirmed Con receipt;
+- one explicit unresolved result;
+- zero accepted free-text receipts;
+- zero unknown-candidate acceptances;
+- zero `judge_parse_failed` results caused by the candidate contract.
+
+One qualification: a fresh model smoke cannot guarantee Qwen will choose `C1` or `unresolved`. The deterministic guarantee belongs in TDD fixtures; the fresh smoke tests whether the revised prompt causes the model to comply.
+
+---
+
 ## 11. Only then rerun the Qwen smoke
 
 The rerun should report separate measures:
@@ -325,6 +375,28 @@ No invalid receipt can halt or contaminate training output.
 It should not be "the funnel has more Con wins." A larger Con count without that contract would be a regression.
 
 ---
+
+## 6.5 Implementation gaps (identified during review)
+
+The current implementation is not yet a candidate-selection-only system. It remains a model-generated-receipt system with a few unused v2 fields added. The decisive gaps are:
+
+1. **`con_candidate_id` is dead data.** It is declared but never consumed by the judge flow, candidate validator, or halting logic. The runtime still passes `debate_eval.counter_evidence`—the LLM's generated object—directly to the validator. Candidate IDs must become the only model-supplied Con-proof field.
+
+2. **The schema is not a true discriminated union.** Although `outcome` permits `unresolved`, the control flow still branches on `winner`. An `unresolved` result is assigned `winner=None`, then later falls into `winner != "pro_debater"` behavior—which is effectively treated like a failed Con path, not a first-class unresolved result.
+
+3. **The prompt contradicts the alleged candidate-selection design.** It says "select a candidate by ID," but then supplies a full free-form receipt template that lacks `candidate_id`; it also tells the model to return `winner=pro_debater` if no candidate exists, rather than `outcome=unresolved`.
+
+4. **Candidate IDs are never made authoritative.** The extractor runs and stores candidates only in `ctx.last_con_candidates` for prompt display. The validator looks for `defense_obligation["candidate_ids"]`, but this runtime never populates that list, and it never resolves the selected ID into immutable anchors/values.
+
+5. **The new strict schema created parse failures, not a controlled unresolved state.** In q9d, seed 42 round 0 produced `winner=con_debater` with `counter_evidence=null`; the added validator rejected the entire judge response as `judge_parse_failed`. That is safer than accepting it, but it is not candidate selection and not useful protocol recovery.
+
+6. **Several receipt failures are deterministically expected from the supported proof domain.** For example, q9d's seed 51 selected `gdImageJpegPtr(...)`, which the validator rejects as an unrecognized operation. That is not solved by making the template more prominent. The extractor/validator only prove a narrow set of known operations; arbitrary wrapper semantics need an implemented proof adapter or an explicit unresolved result.
+
+7. **The test suite misses the broken integration.** The new test adjustments still construct a full model-style `counter_evidence` object. They do not test: Con selection by a valid `C1`; rejection of a non-existent ID; server-side candidate resolution; no-free-text-receipt enforcement; `unresolved` surviving the live runtime; candidate IDs being passed to validation.
+
+### The next implementation must make `con_candidate_id` the only model-supplied Con-proof field
+
+The runtime must reconstruct and validate the receipt locally. Prompt simplification should follow that change, not substitute for it.
 
 ## Relationship to existing tracks
 
