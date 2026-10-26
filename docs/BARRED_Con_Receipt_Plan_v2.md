@@ -134,7 +134,7 @@ or:
 }
 ```
 
-No reviewed contract means `unresolved`, not an inferred obligation. The runtime must return `unresolved` for missing or unsupported contracts **before** evaluating the legacy `con_win_gate`. An unsupported seed must never become a Con win through the legacy gate.
+No reviewed contract means `unresolved`, not an inferred obligation. The runtime must return `unresolved` for missing or unsupported contracts **before** evaluating the legacy `con_win_gate`. An unsupported seed must never become a Con win through the legacy gate. Additionally, in non-enforce modes (`off`, `shadow`), Con outcomes must yield `unresolved` — not `con_win` — and must be excluded from `validated_con_counter_evidence` and training outputs. Con acceptance requires `enforce_deterministic` mode AND a `deterministically_confirmed` receipt. The legacy `con_win_gate` must never accept a Con result in non-enforce modes.
 
 This also fixes the current mismatch between the smoke result narrative and the actual run's seed predicates.
 
