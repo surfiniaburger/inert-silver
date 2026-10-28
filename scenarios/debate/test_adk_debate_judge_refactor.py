@@ -373,13 +373,29 @@ async def test_con_win_validated_receipt_acceptance():
                 "target_verdict": "True",
                 "record_path": os.path.join(td, "run.json"),
                 "attempts_path": os.path.join(td, "attempts.jsonl"),
+                "defense_obligation": {"version": "v1", "kind": "upper_bound"},
             },
         )
         judge = DebateJudgeADK()
         ctx = _EvalContext(req, judge)
+        from scenarios.debate.con_receipt_extractor import extract_candidates
+        ctx.last_con_candidates = extract_candidates("void f(char *dst, char *src, int len, int cap) {\n    if (len > cap) return;\n    memcpy(dst, src, len);\n}", {"version": "v1", "kind": "upper_bound"})
+        ctx.defense_obligation = {"version": "v1", "kind": "upper_bound"}
 
         pro = DebaterScore(technical_accuracy=0.3, logic_soundness=0.3, evidence_strength=0.3, total_score=0.3, critique="Pro argued")
         con = DebaterScore(technical_accuracy=0.9, logic_soundness=0.9, evidence_strength=0.9, total_score=0.9, critique="Con proved bounds check")
+        ce = {
+            "defense_kind": "upper_bound_reject",
+            "guard_anchor": "if (len > capacity) return;",
+            "guarded_value": "len",
+            "protected_operation_anchor": "memcpy(dst, src, len)",
+            "operation_value": "len",
+            "enforcement": "reject_before_operation",
+            "invariant": "len <= capacity before copy",
+            "predicate_precondition": "len exceeds capacity",
+            "value_relation": "guarded_value_equals_operation_value",
+            "counterfactual": "Removing guard lets len reach memcpy.",
+        }
         debate_eval = DebateEval(
             thinking_process="Thinking...",
             predicate="Vulnerable to heap overflow",
@@ -392,11 +408,13 @@ async def test_con_win_validated_receipt_acceptance():
             verifier_report="Passed",
             pro_debater=pro,
             con_debater=con,
+            con_candidate_id="C1",
         )
+        from scenarios.debate.con_receipt_extractor import extract_candidates
+        ctx.last_con_candidates = extract_candidates("void f(char *dst, char *src, int len, int cap) {\n    if (len > cap) return;\n    memcpy(dst, src, len);\n}", {"version": "v1", "kind": "upper_bound"})
         normalized_anchors = ["len < max_len", "char buf[10];"]
         soft_checks = {
             "con_win_counter_evidence": {"pass": True, "applicable": True},
-            "counter_evidence_validation": {"status": "deterministically_confirmed"},
         }
 
         updater = MagicMock()
@@ -412,8 +430,12 @@ async def test_con_win_validated_receipt_acceptance():
         )
         judge._restore_or_call_verifier = AsyncMock()
 
+        from scenarios.debate.adk_debate_judge import _collect_soft_checks
+        sc, as_ = _collect_soft_checks(ctx, debate_eval, "void f(char *dst, char *src, int len, int cap) {\n    if (len > cap) return;\n    memcpy(dst, src, len);\n}", normalized_anchors)
+        soft_checks = sc
+
         is_valid, report, meta, reason = await judge._process_verifier_audit(
-            ctx, 0, debate_eval, "char buf[10];", normalized_anchors, soft_checks, {}, {}, None, "start", updater
+            ctx, 0, debate_eval, "void f(char *dst, char *src, int len, int cap) {\n    if (len > cap) return;\n    memcpy(dst, src, len);\n}", normalized_anchors, soft_checks, {}, {}, None, "start", updater
         )
 
         assert is_valid is True
@@ -441,9 +463,23 @@ async def test_con_win_gate_only_does_not_accept():
         )
         judge = DebateJudgeADK()
         ctx = _EvalContext(req, judge)
+        from scenarios.debate.con_receipt_extractor import extract_candidates
+        ctx.last_con_candidates = extract_candidates("void f(char *dst, char *src, int len, int cap) {\n    if (len > cap) return;\n    memcpy(dst, src, len);\n}", {"version": "v1", "kind": "upper_bound"})
 
         pro = DebaterScore(technical_accuracy=0.3, logic_soundness=0.3, evidence_strength=0.3, total_score=0.3, critique="Pro argued")
         con = DebaterScore(technical_accuracy=0.9, logic_soundness=0.9, evidence_strength=0.9, total_score=0.9, critique="Con proved bounds check")
+        ce = {
+            "defense_kind": "upper_bound_reject",
+            "guard_anchor": "if (len > capacity) return;",
+            "guarded_value": "len",
+            "protected_operation_anchor": "memcpy(dst, src, len)",
+            "operation_value": "len",
+            "enforcement": "reject_before_operation",
+            "invariant": "len <= capacity before copy",
+            "predicate_precondition": "len exceeds capacity",
+            "value_relation": "guarded_value_equals_operation_value",
+            "counterfactual": "Removing guard lets len reach memcpy.",
+        }
         debate_eval = DebateEval(
             thinking_process="Thinking...",
             predicate="Vulnerable to heap overflow",
@@ -456,6 +492,7 @@ async def test_con_win_gate_only_does_not_accept():
             verifier_report="Passed",
             pro_debater=pro,
             con_debater=con,
+            counter_evidence=ce,
         )
         normalized_anchors = ["len < max_len", "char buf[10];"]
         soft_checks = {

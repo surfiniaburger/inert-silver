@@ -7,6 +7,7 @@ def _payload(counter_evidence):
         "pro_debater": {"technical_accuracy": 1, "logic_soundness": 1, "evidence_strength": 1, "total_score": 3, "critique": "x"},
         "con_debater": {"technical_accuracy": 1, "logic_soundness": 1, "evidence_strength": 1, "total_score": 3, "critique": "x"},
         "winner": "con_debater",
+        "con_candidate_id": "C1",
         "reason": "test",
         "mechanism": "Source anchor: x\nSink anchor: y\nMissing guard anchor: z",
         "counterfactual": "test",

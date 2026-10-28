@@ -49,6 +49,24 @@ STOPWORDS: Set[str] = {
 }
 
 FALLBACK_PREDICATE: str = "Vulnerability suspected."
+
+
+def _classify_defense_obligation(predicate: str) -> dict | None:
+    """Infer a V1 defense obligation from a predicate string.
+
+    Returns a dict with version/kind, or None if no simple guard defense applies.
+    """
+    p = (predicate or "").lower()
+    if any(k in p for k in ("identity", "mismatch", "spoofing", "service-principal", "service principal")):
+        return {"version": "v1", "kind": "identity_mismatch"}
+    if any(k in p for k in ("null-pointer", "null pointer", "null dereference", "null deref")):
+        return {"version": "v1", "kind": "null_dereference"}
+    if any(k in p for k in ("overflow", "bounds", "out-of-bounds", "out of bounds", "oob",
+                             "buffer overflow", "array index", "unchecked enum",
+                             "division-by-zero", "division by zero", "stack-overflow",
+                             "stack overflow", "stack-based", "unbounded iteration")):
+        return {"version": "v1", "kind": "upper_bound"}
+    return None
 DEFAULT_EXPANSION_BATCH_SIZE: int = 200
 
 
@@ -613,12 +631,14 @@ Return a JSON object:
                 code, lang, safety = cand
                 gepa_info = await self.gepa_explain_with_retry(code, lang, idx, total)
                 logger.info(f"[GEPA] item {idx}/{total} complete")
+                pred = gepa_info.get("predicate", FALLBACK_PREDICATE)
                 return {
                     "topic": code,
-                    "predicate": gepa_info.get("predicate", FALLBACK_PREDICATE),
+                    "predicate": pred,
                     "gepa_info": gepa_info,
                     "language": lang,
-                    "original_safety": safety
+                    "original_safety": safety,
+                    "defense_obligation": _classify_defense_obligation(pred),
                 }
 
         tasks = [explain_task(i + 1, c) for i, c in enumerate(reservoir)]
@@ -698,6 +718,7 @@ Return a JSON object:
                 "language": lang,
                 "original_safety": safety,
                 "anchors": anchors,
+                "defense_obligation": _classify_defense_obligation(predicate),
             }
             self.register_code(code)
             await state.record_success(seed_record, config.output_path, config.target_total)

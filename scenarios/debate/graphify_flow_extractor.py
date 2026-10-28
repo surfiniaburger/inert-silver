@@ -707,7 +707,9 @@ def _verify_safe_branch_proof(
     if kind == "null_check":
         null_safe = (guarded_value in condition_text and
                      ("!=" in condition_text or condition_text.strip("() ") == guarded_value))
-        if null_safe:
+        # Value relation must be compatible (guarded_value_equals_operation_value)
+        relation_ok = (relation == "guarded_value_equals_operation_value")
+        if null_safe and relation_ok:
             return "safe_branch_dominates_operation"
     elif relation == "guarded_value_equals_operation_value" and ("<=" in condition_text or "<" in condition_text):
         return "safe_branch_bounds"

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Literal, Optional
 
 from a2a.types import (
@@ -9,16 +9,21 @@ from a2a.types import (
 
 
 class DebaterScore(BaseModel):
-    technical_accuracy: float
-    logic_soundness: float
-    evidence_strength: float
-    total_score: float
-    critique: str # GEPA: Adjudication of debater performance
+    technical_accuracy: float = 0.5
+    logic_soundness: float = 0.5
+    evidence_strength: float = 0.5
+    total_score: float = 0.5
+    critique: str = "Standard scorecard critique" # GEPA: Adjudication of debater performance
 
 
 class CounterEvidence(BaseModel):
     """Structured, code-anchored defense claim used only for Con decisions."""
 
+    candidate_id: Optional[str] = Field(
+        default=None,
+        description="Immutable ID of the extractor candidate this receipt is based on (e.g., 'C1'). "
+                    "Required when a candidate extractor is used.",
+    )
     defense_kind: Literal[
         "upper_bound_reject", "lower_bound_reject", "range_guarded_operation",
         "null_check", "equality_reject", "lock_before_shared_access",
@@ -43,11 +48,12 @@ class CounterEvidence(BaseModel):
 
 
 class DebateEval(BaseModel):
-    thinking_process: str # GEPA: Step-by-step thinking before concluding
-    pro_debater: DebaterScore
-    con_debater: DebaterScore
-    winner: Literal["pro_debater", "con_debater"]
-    reason: str # Short summary
+    thinking_process: str = Field(default="", description="GEPA: Step-by-step thinking before concluding")
+    pro_debater: DebaterScore = Field(default_factory=DebaterScore)
+    con_debater: DebaterScore = Field(default_factory=DebaterScore)
+    outcome: Literal["pro_win", "con_win", "unresolved"] = "pro_win"
+    winner: Optional[Literal["pro_debater", "con_debater"]] = None
+    reason: str = Field(default="", description="Short summary")
     mechanism: str = Field(
         description=(
             "Technical mechanism of the bug. Must include three lines: "
@@ -59,7 +65,24 @@ class DebateEval(BaseModel):
     anchors: list[str] = Field(min_length=2) # Concrete evidence hooks (must appear in code)
     verifier_report: str = "not_applicable"
     support_level: Literal["supported", "unsupported", "inconclusive"] = "supported"
-    counter_evidence: Optional[CounterEvidence] = None
+    counter_evidence: Optional[CounterEvidence] = None  # Server-populated from candidate; model should not supply
+    con_candidate_id: Optional[str] = Field(
+        default=None,
+        description="Candidate ID (e.g. 'C1') selected from the provided Con options list. Required if outcome is 'con_win'; must be null if outcome is 'pro_win' or 'unresolved'.",
+    )
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        schema = handler(core_schema)
+        # Server-populated only: exclude counter_evidence and winner from model-facing schema.
+        # The model outputs outcome + con_candidate_id; the runtime derives winner.
+        for field in ("counter_evidence", "winner"):
+            schema.get("properties", {}).pop(field, None)
+            if "required" in schema:
+                schema["required"] = [r for r in schema["required"] if r != field]
+        if "required" in schema and "outcome" not in schema["required"]:
+            schema["required"].append("outcome")
+        return schema
 
     @field_validator("counter_evidence", mode="before")
     @classmethod
@@ -74,6 +97,80 @@ class DebateEval(BaseModel):
         if isinstance(value, list) and len(value) == 1:
             return value[0]
         return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_common_model_variations(cls, data):
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+
+        # 1. Alias handling for reason
+        if not data.get("reason"):
+            for alias in ("verdict_reason", "verdict_reasoning", "reasoning", "summary"):
+                if data.get(alias):
+                    data["reason"] = str(data[alias])
+                    break
+            if not data.get("reason"):
+                data["reason"] = data.get("thinking_process") or "No explicit summary provided."
+
+        # 2. Alias handling for thinking_process
+        if not data.get("thinking_process"):
+            if data.get("verdict_reason"):
+                data["thinking_process"] = str(data["verdict_reason"])
+            elif data.get("reason"):
+                data["thinking_process"] = str(data["reason"])
+            else:
+                data["thinking_process"] = "Adjudication completed without explicit thinking trace."
+        elif isinstance(data["thinking_process"], list):
+            data["thinking_process"] = " ".join(str(item) for item in data["thinking_process"])
+
+        # 3. Default fallback for pro_debater and con_debater
+        if not isinstance(data.get("pro_debater"), dict):
+            data["pro_debater"] = {
+                "technical_accuracy": 0.5,
+                "logic_soundness": 0.5,
+                "evidence_strength": 0.5,
+                "total_score": 0.5,
+                "critique": "Default debater assessment",
+            }
+        if not isinstance(data.get("con_debater"), dict):
+            data["con_debater"] = {
+                "technical_accuracy": 0.5,
+                "logic_soundness": 0.5,
+                "evidence_strength": 0.5,
+                "total_score": 0.5,
+                "critique": "Default debater assessment",
+            }
+        return data
+
+    @model_validator(mode="after")
+    def _validate_outcome_contract(self):
+        # Derive outcome from winner (backward compat with old data)
+        if self.outcome == "pro_win" and self.winner == "con_debater":
+            self.outcome = "con_win"
+        # Derive winner from outcome (new candidate-selection flow)
+        if self.outcome == "con_win" and self.winner is None:
+            self.winner = "con_debater"
+        if self.outcome == "pro_win" and self.winner is None:
+            self.winner = "pro_debater"
+        if self.outcome == "unresolved":
+            self.winner = None
+        # Enforce: con_win requires con_candidate_id.  If the model outputs con_win
+        # without a candidate ID, downgrade to unresolved (controlled abstention).
+        if self.outcome == "con_win":
+            if self.con_candidate_id is None:
+                self.outcome = "unresolved"
+                self.winner = None
+                self.counter_evidence = None
+        # pro_win and unresolved must not have a candidate
+        if self.outcome == "pro_win":
+            self.con_candidate_id = None
+        if self.outcome == "unresolved":
+            self.winner = None
+            self.counter_evidence = None
+            self.con_candidate_id = None
+        return self
 
 
 class VerifierReport(BaseModel):

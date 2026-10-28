@@ -33,7 +33,7 @@ from scenarios.debate.reflector_schemas import (
     get_static_baseline_prompt,
 )
 
-SEND_MESSAGE_TIMEOUT = int(os.getenv("SEND_MESSAGE_TIMEOUT", "600"))
+SEND_MESSAGE_TIMEOUT = int(os.getenv("SEND_MESSAGE_TIMEOUT", "1800"))
 
 
 def _load_processed_predicates(output_path: str) -> set:

@@ -14,6 +14,27 @@ VALID_OBLIGATIONS = {
     "identity_mismatch": {"equality_reject"},
 }
 
+# Recognized memory-safety sinks whose semantics are established by V1.
+# An operation anchor containing one of these names is treated as a known
+# memory operation.  An unrecognized operation requires a trusted_operation_summary
+# in the evidence or defense_obligation before it can be confirmed.
+RECOGNIZED_SINKS = {
+    "memcpy", "memmove", "strcpy", "strncpy", "strcat", "strncat",
+    "sprintf", "snprintf", "memset", "free", "kfree", "bcopy",
+    "malloc", "calloc", "realloc",
+}
+
+
+# V1 compatibility matrix: exact (enforcement, value_relation) tuples per defense_kind.
+# Any pairing not listed here is rejected before returning deterministically_confirmed.
+V1_COMPATIBILITY = {
+    "upper_bound_reject": {("reject_before_operation", "guarded_value_equals_operation_value")},
+    "range_guarded_operation": {("operation_inside_safe_branch", "guarded_value_equals_operation_value")},
+    "null_check": {("reject_before_operation", "guarded_value_equals_operation_value")},
+    "equality_reject": {("reject_before_operation", "guarded_value_equals_operation_value")},
+}
+
+
 
 def _receipt(status: str, *, reason: str | None = None, evidence: Dict[str, Any] | None = None,
              checks: Dict[str, bool] | None = None) -> Dict[str, Any]:
@@ -55,6 +76,29 @@ def validate_counter_evidence(code: str, predicate: str, evidence: Any,
     if (evidence["guard_anchor"] not in evidence["counterfactual"]
             and evidence["operation_value"] not in evidence["counterfactual"]):
         return _receipt("invalid_contract", reason="counter_evidence_counterfactual_incoherent")
+    # V1 compatibility: enforcement/value_relation must be an exact supported tuple
+    compat_key = (evidence["enforcement"], evidence["value_relation"])
+    if compat_key not in V1_COMPATIBILITY.get(evidence["defense_kind"], set()):
+        return _receipt("invalid_contract", reason="counter_evidence_incompatible_pairing")
+    # Candidate ID validation (if candidates were provided via defense_obligation)
+    candidate_ids = defense_obligation.get("candidate_ids") if isinstance(defense_obligation, dict) else None
+    cid = evidence.get("candidate_id")
+    if candidate_ids is not None and cid not in candidate_ids:
+        return _receipt("invalid_contract", reason="counter_evidence_invalid_candidate_id")
+    # Semantic check: if the operation is not a recognized sink, require a
+    # trusted_operation_summary to establish its semantics.  Structural proof
+    # alone is insufficient for unrecognized operations.
+    op_anchor = evidence.get("protected_operation_anchor", "")
+    # Extract the actual called function name (exact, not substring) from the anchor.
+    import re as _re
+    _call_match = _re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(", op_anchor)
+    op_func_name = _call_match.group(1) if _call_match else None
+    op_is_recognized = op_func_name in RECOGNIZED_SINKS
+    # V1 does not have a trusted-operation-summary mechanism.  An unrecognized
+    # operation cannot be confirmed on structural proof alone — abstain (reject).
+    # Do not accept a free-form string as a bypass.
+    if not op_is_recognized:
+        return _receipt("invalid_contract", reason="counter_evidence_unrecognized_operation")
     proof = extract_counter_evidence_proof(code, evidence)
     checks = {
         "guard_anchor_exact": True,

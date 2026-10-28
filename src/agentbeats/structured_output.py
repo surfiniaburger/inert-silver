@@ -264,16 +264,23 @@ def _build_repair_messages(
     raw_text: str,
     strict: bool,
     original_messages: Optional[list[dict[str, str]]] = None,
+    validation_error: Optional[str] = None,
 ) -> list[dict[str, str]]:
     schema_json = json.dumps(schema_model.model_json_schema(), indent=2)
+    err_context = f"\n\nValidation Error to Fix:\n{validation_error}" if validation_error else ""
     if raw_text and raw_text.strip():
-        user_text = f"JSON Schema (strict={strict}):\n{schema_json}\n\nText to convert:\n{raw_text}"
+        user_text = (
+            f"JSON Schema (strict={strict}):\n{schema_json}\n\n"
+            f"Text to convert/repair:\n{raw_text}"
+            f"{err_context}\n\n"
+            "Fix the errors and output ONLY the corrected JSON object conforming exactly to the schema."
+        )
         return [
             {
                 "role": "system",
                 "content": (
-                    "You are a JSON repair tool. Convert the input text into a single valid JSON object "
-                    "that conforms EXACTLY to the provided JSON schema. Output ONLY JSON. No markdown."
+                    "You are a JSON repair tool. Convert and repair the input text into a single valid JSON object "
+                    "that conforms EXACTLY to the provided JSON schema and resolves any validation errors. Output ONLY JSON. No markdown."
                 ),
             },
             {"role": "user", "content": user_text},
@@ -281,6 +288,7 @@ def _build_repair_messages(
 
     system_instruction = (
         f"You MUST output a single valid JSON object conforming EXACTLY to this schema:\n{schema_json}\n"
+        f"{err_context}\n"
         "Output ONLY the JSON object. Do NOT wrap in markdown. Do NOT output any conversational text."
     )
     if original_messages:
@@ -305,9 +313,12 @@ async def _execute_repair_completion(
     strict: bool,
     stage: str,
     original_messages: Optional[list[dict[str, str]]] = None,
+    validation_error: Optional[str] = None,
     **kwargs,
 ) -> T:
-    repair_messages = _build_repair_messages(schema_model, raw_text, strict, original_messages)
+    repair_messages = _build_repair_messages(
+        schema_model, raw_text, strict, original_messages, validation_error=validation_error
+    )
     repair_kwargs: dict[str, Any] = {
         "model": repair_model or model,
         "messages": repair_messages,
@@ -364,13 +375,14 @@ async def call_structured(
     try:
         return schema_model.model_validate_json(raw_text)
     except Exception as e:
+        err_str = _stringify_exc(e)
         _safe_record_event(
             replay_manager,
             model=model,
             name="structured_output_validation_error",
             params={"schema_fp": schema_fp, "schema_name": schema_name, "strict": strict},
             payload={
-                "error": _stringify_exc(e),
+                "error": err_str,
                 "schema_fp": schema_fp,
                 "schema_name": schema_name,
                 "raw_text": raw_text,
@@ -391,5 +403,6 @@ async def call_structured(
             strict,
             stage,
             original_messages=messages,
+            validation_error=err_str,
             **kwargs,
         )

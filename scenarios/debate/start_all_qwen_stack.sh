@@ -8,19 +8,19 @@ cd "$ROOT_DIR"
 lsof -ti:9009,9018,9019,9020 | xargs kill -9 2>/dev/null || true
 
 # All roles -> Uzu Qwen 3.5 4B on port 8000
-export DEBATER_MODEL="openai/trymirai/Qwen3.8-27B-M"
+export DEBATER_MODEL="openai/trymirai/Qwen3.5-9B-M"
 export DEBATER_API_BASE="http://localhost:8000/v1"
 export DEBATER_API_KEY="uzu"
 
-export VERIFIER_MODEL="openai/trymirai/Qwen3.8-27B-M"
+export VERIFIER_MODEL="openai/trymirai/Qwen3.5-9B-M"
 export VERIFIER_API_BASE="http://localhost:8000/v1"
 export VERIFIER_API_KEY="uzu"
 
-export GENERATOR_MODEL="openai/trymirai/Qwen3.8-27B-M"
+export GENERATOR_MODEL="openai/trymirai/Qwen3.5-9B-M"
 export GENERATOR_API_BASE="http://localhost:8000/v1"
 export GENERATOR_API_KEY="uzu"
 
-export JUDGE_MODEL="openai/trymirai/Qwen3.8-27B-M"
+export JUDGE_MODEL="openai/trymirai/Qwen3.5-9B-M"
 export JUDGE_API_BASE="http://localhost:8000/v1"
 export JUDGE_API_KEY="uzu"
 
@@ -35,7 +35,7 @@ export LLM_MAX_TOKENS="8192"
 export SEND_MESSAGE_TIMEOUT="2000"
 
 echo "============================================================"
-echo " Starting Debate Stack (All Uzu Qwen 3.8 27B):"
+echo " Starting Debate Stack (All Uzu Qwen 3.5 9B):"
 echo "   Debater:   $DEBATER_MODEL -> $DEBATER_API_BASE"
 echo "   Verifier:  $VERIFIER_MODEL -> $VERIFIER_API_BASE"
 echo "   Judge:     $JUDGE_MODEL -> $JUDGE_API_BASE"
