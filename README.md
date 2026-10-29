@@ -841,12 +841,12 @@ uv run python scenarios/debate/run_batch.py \
 
 
 uv run python scenarios/debate/run_batch.py \
-  --seeds scenarios/debate/cve_seeds_smoke_2.jsonl \
-  --run-id ql-smoke-armC-struct-esc \
-  --output artifacts/factorial/corpus_armC_ql_smoke.jsonl \
-  --attempts-out artifacts/attempts/ql-smoke-armC.jsonl \
-  --manifest-out artifacts/runs/ql-smoke-armC/batch_manifest.json \
-  --gepa-dir artifacts/gepa_ql_pareto_smoke \
+  --seeds scenarios/debate/cve_seeds_smoke_2gate.jsonl \
+  --run-id q9d-struct-esc \
+  --output artifacts/factorial/corpus_armC_q9d_smoke.jsonl \
+  --attempts-out artifacts/attempts/q9d-smoke-armC.jsonl \
+  --manifest-out artifacts/runs/q9d-smoke-armC/batch_manifest.json \
+  --gepa-dir artifacts/gepa_q9d_pareto_smoke \
   --seed 42 \
   --mode record \
   --slice-judge \
@@ -858,6 +858,16 @@ uv run python scenarios/debate/run_batch.py \
   --counter-evidence-validation-mode enforce_deterministic \
   --halt-on-con-win
 
+SEND_MESSAGE_TIMEOUT=600 uv run python scenarios/debate/run_batch.py \
+  --seeds scenarios/debate/cve_seeds_smoke_2gate.jsonl \
+  --run-id q9b-gate-smoke-v2 \
+  --gepa-dir artifacts/gepa_q9d_pareto_smoke \
+  --output artifacts/factorial/corpus_gate_smoke_v2.jsonl \
+  --attempts-out artifacts/attempts/gate-smoke-v2.jsonl \
+  --manifest-out artifacts/runs/gate-smoke-v2/batch_manifest.json \
+  --seed 42 --mode record --slice-judge --reflector --reflector-in-process \
+  --reflector-mode symmetric --escalate-pareto --max-concurrency 1 \
+  --counter-evidence-validation-mode enforce_deterministic --halt-on-con-win
 
 uv run python scenarios/debate/run_batch.py \
   --seeds scenarios/debate/cve_seeds_smoke_2.jsonl \
@@ -873,3 +883,31 @@ uv run python scenarios/debate/run_batch.py \
   --escalate-pareto \
   --max-concurrency 1 \
   --counter-evidence-validation-mode enforce_deterministic
+
+
+
+
+
+
+SEND_MESSAGE_TIMEOUT=600 uv run python scenarios/debate/run_batch.py \
+  --seeds scenarios/debate/cve_seeds_smoke_2gate.jsonl \
+  --run-id q9b-gate-smoke-v3 \
+  --output artifacts/factorial/corpus_gate_smoke_v3.jsonl \
+  --gepa-dir artifacts/gepa_q9dl_pareto_smoke \
+  --attempts-out artifacts/attempts/gate-smoke-v3.jsonl \
+  --manifest-out artifacts/runs/gate-smoke-v3/batch_manifest.json \
+  --seed 42 --mode record --slice-judge --reflector --reflector-in-process \
+  --reflector-mode symmetric --escalate-pareto --max-concurrency 1 \
+  --counter-evidence-validation-mode enforce_deterministic --halt-on-con-win
+
+
+uv run python scenarios/debate/run_batch.py \
+  --seeds scenarios/debate/cve_seeds_smoke_2gate.jsonl \
+  --run-id m9bol-gate-smoke-v10 \
+  --output artifacts/factorial/corpus_gateol_smoke_v10.jsonl \
+  --gepa-dir artifacts/gepa_m9dl_pareto_smoke \
+  --attempts-out artifacts/attempts/gateol-smoke-v10.jsonl \
+  --manifest-out artifacts/runs/gateol-smoke-v10/batch_manifest.json \
+  --seed 42 --mode record --slice-judge --reflector --reflector-in-process \
+  --reflector-mode symmetric --escalate-pareto --max-concurrency 1 \
+  --counter-evidence-validation-mode enforce_deterministic --halt-on-con-win
